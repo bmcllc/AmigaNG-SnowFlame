@@ -1,4 +1,5 @@
 #include "soc.h"
+#include "sffs.h"
 
 namespace sf {
 using namespace abi;
@@ -17,16 +18,50 @@ Soc::Soc() : bridge(bus), cpu(bus), vpuA(bus, IRQ_VPUA), vpuB(bus, IRQ_VPUB), gp
   bus.map_device(PAD_BASE, 0x1000, &pads);
   bus.map_device(HID_BASE, 0x1000, &hid);
   bus.map_device(DBG_BASE, 0x1000, &console);
+  bridge.on_reboot = [this]() {
+    sched.at(1000000, [this]() {                               // depois da instrução corrente
+      char buf[IPL_PATH_MAX + 1]; std::memcpy(buf, bus.raw(SRAM_BASE, IPL_PATH_MAX), IPL_PATH_MAX); buf[IPL_PATH_MAX] = 0;
+      if (!boot_dvd(buf)) { cpu.halted = true; }
+    });
+  };
   video.on_vblank_hook = [this]() { paula.render_until(sched.now); pads.latch(); };
+}
+
+void Soc::quiesce() {
+  using namespace abi;
+  bus.mmu_on = false; bus.mmu_super_bypass = false; for (auto& e : bus.tlb) e.v = false;
+  bus.cache_flush_all(true); bus.icache_inval_all();
+  bus.irq_mask = 0; bus.irq_status = 0;
+  timers.write(TMR_CTRL, 0); timers.write(0x10 + TMR_CTRL, 0);
+  hid.write(HID_CTRL, 0); pads.write(PAD_CTRL, 0); dvd.write(DVD_CTRL, 0); dvd.write(DVD_STATUS, 6); mcard.write(MC_CTRL, 0); mcard.write(MC_STATUS, 6);
+  video.write(VID_CTRL, 0); for (int i = 0; i < VID_LAYERS; i++) video.write(VID_LAYER0 + (u32)i * VID_LAYER_STRIDE + LR_FLAGS, 0);
+  cop.write(COP_CTRL, 0);
+  paula.write(PA_SEQ_CTRL, 0); for (int v = 0; v < PAULA_VOICES; v++) paula.write(PA_VOICE0 + (u32)v * 0x40 + PV_CTRL, 0); for (int c = 0; c < 4; c++) paula.write(PA_LEG0 + (u32)c * 0x10 + 12, 0);
+  paula.write(PA_MASTER, 256); paula.write(PA_REVERB_WET, 0);
+}
+
+bool Soc::boot_dvd(const std::string& path) {
+  using namespace abi;
+  SffsEntry e; if (!sffs_find(dvd.disc, path, e) || e.size == 0 || (u64)IPL_LOAD_ADDR + e.size > DDR_SIZE) return false;
+  quiesce();
+  bus.raw_write(IPL_LOAD_ADDR, &dvd.disc[(size_t)e.lba * DVD_SECTOR], e.size);
+  cpu.reset_regs(); cpu.a[7] = IPL_STACK; cpu.set_pc(e.flags ? e.flags : IPL_LOAD_ADDR);
+  boots++; last_boot = path; return true;
 }
 
 bool Soc::step_one() {
   if (cpu.halted && sched.empty()) return false;
-  if (cpu.idle()) { Ps nt = sched.next_time(); if (nt == ~0ull) return false; sched.advance_to(nt); return true; }
+  if (cpu_idle()) { Ps nt = sched.next_time(); if (nt == ~0ull) return false; sched.advance_to(nt); return true; }
   u32 pc0 = cpu.pc; int c = cpu.step();
   if (c) sched.advance_to(sched.now + (Ps)c * 1000000ull / 266 + take_stall());
   if (on_step) on_step(pc0, c);
   return true;
+}
+
+// A CPU em STOP só está ociosa até chegar uma interrupção que ela aceite (aí o próximo passo a acorda).
+bool Soc::cpu_idle() const {
+  if (cpu.halted) return true;
+  return cpu.stopped && !(bus.irq_pending() && ((cpu.sr >> 8) & 7) < (u32)IRQ_LEVEL);
 }
 
 Ps Soc::take_stall() { Ps s = bus.cpu_stall_ps; bus.cpu_stall_ps = 0; return s; }
@@ -34,7 +69,7 @@ Ps Soc::take_stall() { Ps s = bus.cpu_stall_ps; bus.cpu_stall_ps = 0; return s; 
 Ps Soc::run(Ps limit) {
   Ps start = sched.now, end = start + limit;
   while (sched.now < end) {
-    if (cpu.idle()) {
+    if (cpu_idle()) {
       Ps nt = sched.next_time();
       if (nt == ~0ull) break;                       // nada mais a acontecer
       sched.advance_to(std::min(nt, end));
@@ -67,7 +102,7 @@ void Soc::run_frames(int n) {
   Ps guard = sched.now + (Ps)(n + 2) * FRAME_PS;
   while (video.frames < target && sched.now < guard) {
     Ps nt = std::min(sched.next_time(), guard);
-    if (!cpu.idle()) run(std::min<Ps>(nt - sched.now + 1, 1000000ull)); else sched.advance_to(nt);
+    if (!cpu_idle()) run(std::min<Ps>(nt - sched.now + 1, 1000000ull)); else sched.advance_to(nt);
   }
 }
 

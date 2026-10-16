@@ -2,6 +2,7 @@
 #pragma once
 #include "abi.h"
 #include <algorithm>
+#include <map>
 #include <string>
 #include <utility>
 
@@ -11,7 +12,7 @@ using SffsFile = std::pair<std::string, std::vector<u8>>;
 
 // Monta a imagem: setor 0 = superbloco, diretório logo depois, depois os dados (alinhados a setor).
 // Devolve falso (e preenche 'err') se algum nome for vazio/longo demais ou repetido.
-inline bool sffs_build(const std::vector<SffsFile>& files, std::vector<u8>& image, std::string* err = nullptr) {
+inline bool sffs_build(const std::vector<SffsFile>& files, std::vector<u8>& image, std::string* err = nullptr, const std::map<std::string, u32>* flags = nullptr) {
   using namespace abi;
   auto fail = [&](const std::string& m) { if (err) *err = m; return false; };
   for (size_t i = 0; i < files.size(); i++) {
@@ -30,9 +31,24 @@ inline bool sffs_build(const std::vector<SffsFile>& files, std::vector<u8>& imag
     size_t e = (size_t)DVD_SECTOR + i * SFFS_ENTRY_SIZE;
     std::memcpy(&image[e], files[i].first.c_str(), files[i].first.size());
     put32(e + 48, lbas[i]); put32(e + 52, (u32)files[i].second.size());
+    if (flags) { auto it = flags->find(files[i].first); if (it != flags->end()) put32(e + 56, it->second); }
     if (!files[i].second.empty()) std::memcpy(&image[(size_t)lbas[i] * DVD_SECTOR], files[i].second.data(), files[i].second.size());
   }
   return true;
+}
+
+// Procura um arquivo numa imagem SnowFS (lado do host / firmware).
+struct SffsEntry { u32 lba = 0, size = 0, flags = 0; };
+inline bool sffs_find(const std::vector<u8>& disc, const std::string& name, SffsEntry& out) {
+  using namespace abi;
+  auto g32 = [&](size_t o) { return o + 4 <= disc.size() ? ((u32)disc[o] << 24) | ((u32)disc[o + 1] << 16) | ((u32)disc[o + 2] << 8) | disc[o + 3] : 0u; };
+  if (g32(0) != SFFS_MAGIC || g32(4) != SFFS_VERSION) return false;
+  u32 n = g32(8), dir = g32(12);
+  for (u32 i = 0; i < n; i++) {
+    size_t e = (size_t)dir * DVD_SECTOR + (size_t)i * SFFS_ENTRY_SIZE; if (e + SFFS_ENTRY_SIZE > disc.size()) return false;
+    if (std::strncmp((const char*)&disc[e], name.c_str(), SFFS_NAME_MAX) == 0) { out.lba = g32(e + 48); out.size = g32(e + 52); out.flags = g32(e + 56); return true; }
+  }
+  return false;
 }
 
 }  // namespace sf

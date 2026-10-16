@@ -61,6 +61,8 @@ void os_cache_invalidate(unsigned addr, unsigned len);
 void os_icache_invalidate(unsigned addr, unsigned len);
 int  dma_copy(unsigned dst, unsigned src, unsigned len, unsigned flags);   /* bloqueante, canal 0 */
 
+void os_reboot(const char *path);                 /* IPL: reinicia e carrega 'path' do DVD (não retorna), ex.: "boot/menu.bin" */
+
 /* a aplicação define app_main (roda como tarefa de prioridade 5) */
 void app_main(void);
 

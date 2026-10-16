@@ -18,35 +18,6 @@ using namespace sf;
 using namespace sf::abi;
 
 // ---------------------------------------------------------------- utilitários ----------------------------------------------------------------
-static u32 crc_table[256]; static bool crc_init = false;
-static u32 crc32(const u8* d, size_t n, u32 c = 0xFFFFFFFFu) {
-  if (!crc_init) { for (u32 i = 0; i < 256; i++) { u32 x = i; for (int k = 0; k < 8; k++) x = (x & 1) ? 0xEDB88320u ^ (x >> 1) : x >> 1; crc_table[i] = x; } crc_init = true; }
-  for (size_t i = 0; i < n; i++) c = crc_table[(c ^ d[i]) & 0xFF] ^ (c >> 8);
-  return c;
-}
-// PNG sem compressão (blocos "stored" do zlib): grande, mas dispensa dependências.
-static bool write_png(const std::string& path, int w, int h, const std::vector<u32>& argb) {
-  std::vector<u8> raw; raw.reserve((size_t)(w * 3 + 1) * h);
-  for (int y = 0; y < h; y++) { raw.push_back(0); for (int x = 0; x < w; x++) { u32 p = argb[(size_t)y * w + x]; raw.push_back((u8)(p >> 16)); raw.push_back((u8)(p >> 8)); raw.push_back((u8)p); } }
-  std::vector<u8> z = {0x78, 0x01}; u32 a = 1, b = 0;
-  for (u8 c : raw) { a = (a + c) % 65521; b = (b + a) % 65521; }
-  for (size_t pos = 0; pos < raw.size(); pos += 65535) {
-    size_t n = std::min<size_t>(65535, raw.size() - pos); bool last = pos + n >= raw.size();
-    z.push_back(last ? 1 : 0); z.push_back((u8)n); z.push_back((u8)(n >> 8)); z.push_back((u8)~n); z.push_back((u8)(~n >> 8));
-    z.insert(z.end(), raw.begin() + pos, raw.begin() + pos + n);
-  }
-  for (int k = 3; k >= 0; k--) z.push_back((u8)(((b << 16) | a) >> (8 * k)));
-  FILE* f = std::fopen(path.c_str(), "wb"); if (!f) return false;
-  auto be32 = [&](u32 v) { u8 t[4] = {(u8)(v >> 24), (u8)(v >> 16), (u8)(v >> 8), (u8)v}; std::fwrite(t, 1, 4, f); };
-  auto chunk = [&](const char* type, const std::vector<u8>& d) {
-    be32((u32)d.size()); std::vector<u8> t(type, type + 4); t.insert(t.end(), d.begin(), d.end());
-    std::fwrite(t.data(), 1, t.size(), f); be32(crc32(t.data(), t.size()) ^ 0xFFFFFFFFu);
-  };
-  std::fwrite("\x89PNG\r\n\x1a\n", 1, 8, f);
-  std::vector<u8> ihdr = {(u8)(w >> 24), (u8)(w >> 16), (u8)(w >> 8), (u8)w, (u8)(h >> 24), (u8)(h >> 16), (u8)(h >> 8), (u8)h, 8, 2, 0, 0, 0};
-  chunk("IHDR", ihdr); chunk("IDAT", z); chunk("IEND", {});
-  std::fclose(f); return true;
-}
 static std::vector<u32> grab(Soc& s, u32 addr, int w, int h, int pitch_bytes) {
   std::vector<u32> v((size_t)w * h);
   for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) v[(size_t)y * w + x] = s.bus.raw_r32(addr + y * pitch_bytes + x * 4);

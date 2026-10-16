@@ -271,6 +271,7 @@ u32 Bridge::read(u32 off) {
 void Bridge::write(u32 off, u32 v) {
   if (off == BR_IRQ_STATUS) { bus.irq_status &= ~v; return; }
   if (off == BR_IRQ_MASK) { bus.irq_mask = v; return; }
+  if (off == BR_SYS_CTRL) { if ((v & 1) && on_reboot) on_reboot(); return; }
   if (off == BR_CACHE_ADDR) { cache_addr = v; return; }
   if (off == BR_CACHE_LEN) { cache_len = v; return; }
   if (off == BR_CACHE_CTRL) { if (bus.cache_enabled && !(v & 1)) bus.cache_flush_all(true); bus.cache_enabled = v & 1; bus.icache_enabled = !(v & 2); return; }

@@ -72,6 +72,15 @@
 #define DVD_CAPACITY 0x18
 #define DVD_SECTOR   2048
 
+/* ---- cartão de memória ---- */
+#define MC_CMD       0x00
+#define MC_SECTOR    0x04
+#define MC_COUNT     0x08
+#define MC_ADDR      0x0C
+#define MC_STATUS    0x10
+#define MC_CTRL      0x14
+#define MC_CAPACITY  0x18
+
 /* ---- teclado e mouse (HID) ---- */
 #define HID_CTRL        0x00
 #define HID_KEY_COUNT   0x04
@@ -95,6 +104,7 @@
 #define BR_CACHE_ADDR      0x024
 #define BR_CACHE_LEN       0x028
 #define BR_CACHE_CTRL      0x02C
+#define BR_SYS_CTRL        0x0F0
 #define BR_SEM0            0x040
 #define BR_DMA0            0x100
 #define CACHE_FLUSH_ALL    1

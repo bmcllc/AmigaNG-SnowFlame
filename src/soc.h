@@ -35,12 +35,18 @@ class Soc {
   // Gancho chamado após cada instrução da CPU (pc da instrução, ciclos gastos): profiler, rastreio.
   std::function<void(u32 pc, int cycles)> on_step;
   // Executa uma instrução (ou, com a CPU parada, avança até o próximo evento). false = nada mais pode acontecer.
+  // IPL (firmware de boot): carrega 'path' do SnowFS do DVD em IPL_LOAD_ADDR e inicia a CPU na entrada gravada em 'flags'.
+  // O programa também pode pedir um novo boot escrevendo o caminho em SRAM_BASE e 1 em BR_SYS_CTRL.
+  bool boot_dvd(const std::string& path = "boot/menu.bin");
+  void quiesce();                  // silencia os dispositivos (IRQs, timers, vídeo, áudio, MMU) antes de um novo boot
+  u32 boots = 0; std::string last_boot;
   bool step_one();
   // Executa o sistema por até 'limit' ps de tempo simulado. A CPU roda enquanto não estiver parada;
   // eventos dos dispositivos (DMA, VPU, GPU...) avançam em paralelo. Retorna quando o tempo acaba,
   // quando a CPU dá HALT e não há mais eventos, ou quando a CPU para sem eventos pendentes.
   Ps run(Ps limit);
   Ps take_stall();
+  bool cpu_idle() const;
   // Roda até a CPU executar HALT (ou limite de tempo). Retorna true se halted por instrução HALT.
   bool run_until_halt(Ps limit = 10ull * 1000000000000ull);
   void run_frames(int n);          // liga o vídeo e roda n quadros (60 Hz)

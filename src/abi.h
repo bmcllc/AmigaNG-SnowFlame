@@ -45,6 +45,7 @@ enum : u32 {
   BR_CACHE_ADDR = 0x024,
   BR_CACHE_LEN = 0x028,
   BR_CACHE_CTRL = 0x02C,// bit0: cache de dados habilitada
+  BR_SYS_CTRL = 0x0F0,  // W: bit0 = reinicia o sistema e carrega do DVD o programa cujo caminho (NUL-terminado, <= 63 B) está em SRAM_BASE
   BR_SEM0 = 0x040,      // 16 semáforos: leitura = P (decrementa se >0, devolve valor antigo); escrita = V (soma valor, mín 1)
   BR_DMA0 = 0x100,      // 4 canais x 0x20
 };
@@ -195,6 +196,8 @@ constexpr u32 HID_FIFO_DEPTH = 64, HID_KEY_UP = 0x100;
 // ---------------- SnowFS (sistema de arquivos somente leitura do DVD) ----------------
 // Setor 0: magic 'SFFS', versão, nº de arquivos, LBA do diretório, nº de setores do diretório, total de setores.
 // Diretório: entradas de 64 B (nome[48] com NUL, LBA, tamanho, flags, reservado). Caminhos planos ("dir/arq"). Dados alinhados a setor.
+// Em arquivos executáveis o campo 'flags' da entrada guarda o endereço de entrada; todos são carregados em IPL_LOAD_ADDR (IPL = firmware de boot).
+constexpr u32 IPL_LOAD_ADDR = 0x1000, IPL_STACK = 0x00F00000, IPL_PATH_MAX = 64;
 constexpr u32 SFFS_MAGIC = 0x53464653, SFFS_VERSION = 1, SFFS_ENTRY_SIZE = 64, SFFS_NAME_MAX = 48;
 
 // ---------------- Console de depuração ----------------

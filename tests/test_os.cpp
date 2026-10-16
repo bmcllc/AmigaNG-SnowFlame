@@ -403,3 +403,19 @@ TEST(os_amiga_dos_open_read_seek_write_delay) {
   CHECK(o.console.find("ola dos\nfim\n") != std::string::npos);
   u32 d = sym32(s, o, "t_delay"); CHECK(d >= 100 && d <= 104);
 }
+
+// ======================= IPL: boot pelo DVD e reinício a pedido do programa =======================
+TEST(ipl_boots_from_dvd_and_chains_to_another_program) {
+  CcOptions opt; opt.include_dirs = {"os", "os/include"};
+  CcResult a = cc_compile("#include \"snowos_all.c\"\nvoid app_main(void) { os_printf(\"A: menu\\n\"); task_sleep(3); os_reboot(\"games/b.bin\"); }", "a.c", opt);
+  CcResult b = cc_compile("#include \"snowos_all.c\"\nvoid app_main(void) { os_printf(\"B: jogo ticks<10=%d\\n\", os_ticks() < 10); os_exit(5); }", "b.c", opt);
+  CHECK(a.ok); CHECK(b.ok);
+  std::vector<u8> disc; std::map<std::string, u32> fl = {{"boot/menu.bin", a.entry}, {"games/b.bin", b.entry}};
+  CHECK(sffs_build({{"boot/menu.bin", a.image}, {"games/b.bin", b.image}}, disc, nullptr, &fl));
+  Soc s; s.dvd.insert(disc);
+  CHECK(!s.boot_dvd("nao/existe.bin")); CHECK(s.boot_dvd());
+  CHECK(s.run_until_halt(3000000000000ull)); s.bus.cache_flush_all(false);
+  CHECK_EQ(s.boots, 2u); CHECK(s.last_boot == "games/b.bin");
+  CHECK(s.console.out.find("A: menu\nB: jogo ticks<10=1") != std::string::npos);
+  CHECK_EQ(s.bus.raw_r32(b.symbols["os_exit_code"]), 5u);
+}

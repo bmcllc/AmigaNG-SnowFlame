@@ -121,6 +121,7 @@ class Bridge : public Device {
   struct Ch { u32 src = 0, dst = 0, len = 0, flags = 0, desc = 0, status = 0; };
   Ch ch[4];
   u64 dma_bytes = 0, dma_jobs = 0;
+  std::function<void()> on_reboot;                  // BR_SYS_CTRL bit0
  private:
   Bus& bus; u32 time_hi_latch = 0; u32 cache_addr = 0, cache_len = 0;
   void start(int c, bool chain);

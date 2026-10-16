@@ -4,7 +4,7 @@ SRC := src/bus.cpp src/cpu_cf.cpp src/vpu.cpp src/flamecore.cpp src/chipset.cpp 
 OBJ := $(SRC:src/%.cpp=build/%.o)
 LIB := build/libsnowflame.a
 
-all: $(LIB) build/sf100_tests build/sf100_demo build/snowcc build/sfdbg build/sfprof build/m68kxlat build/sfclassic build/sf100_techdemos
+all: $(LIB) build/sf100_tests build/sf100_demo build/snowcc build/sfdbg build/sfprof build/m68kxlat build/sfclassic build/sf100_techdemos build/sf100_mkdvd build/sf100_boot
 
 build/%.o: src/%.cpp $(wildcard src/*.h)
 	@mkdir -p build
@@ -38,6 +38,19 @@ build/sfclassic: tools/sfclassic_main.cpp $(LIB) $(wildcard src/*.h)
 build/sf100_techdemos: tools/techdemos_main.cpp $(LIB) $(wildcard src/*.h) $(wildcard demo/*.h)
 	$(CXX) $(CXXFLAGS) -Idemo $< $(LIB) -o $@
 
+build/sf100_mkdvd: tools/mkdvd_main.cpp $(LIB) $(wildcard src/*.h)
+	$(CXX) $(CXXFLAGS) $< $(LIB) -o $@
+
+build/sf100_boot: tools/sfboot_main.cpp $(LIB) $(wildcard src/*.h)
+	$(CXX) $(CXXFLAGS) $< $(LIB) -o $@
+
+# DVD do sistema (menu + recursos + jogos) e boot sem janela
+dvd: build/sf100_mkdvd os/apps/menu.c $(wildcard os/*.c) $(wildcard os/include/*.h) $(wildcard assets/*)
+	mkdir -p out && ./build/sf100_mkdvd -o out/snowflame.dvd $(GAMES)
+
+boot: dvd build/sf100_boot
+	./build/sf100_boot out/snowflame.dvd --frames 400 --shot 100 --shot 250 --shot 399
+
 techdemos: build/sf100_techdemos
 	mkdir -p out/techdemos && ./build/sf100_techdemos out/techdemos
 
@@ -50,4 +63,4 @@ demo: build/sf100_demo
 clean:
 	rm -rf build out
 
-.PHONY: all test demo techdemos clean
+.PHONY: all test demo techdemos dvd boot clean

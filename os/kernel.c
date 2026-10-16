@@ -327,8 +327,16 @@ int dma_copy(unsigned dst, unsigned src, unsigned len, unsigned flags) {
   return (st & DMAS_ERROR) ? -1 : 0;
 }
 
+void os_reboot(const char *path) {
+  int i; volatile unsigned char *d = (volatile unsigned char *)SRAM_BASE;
+  for (i = 0; i < 63 && path[i]; i++) d[i] = (unsigned char)path[i];
+  d[i] = 0;
+  REG(BRIDGE_BASE + BR_SYS_CTRL) = 1;
+  for (;;) task_sleep(1000);
+}
+
 /* ------------------------------ boot ------------------------------ */
-static void idle_task(void) { for (;;) { } }
+static void idle_task(void) { for (;;) { __stop(0x2000); } }   /* roda em supervisor: STOP até a próxima interrupção (o emulador pula o tempo ocioso) */
 static void app_wrapper(void) { app_main(); os_exit(0); }
 
 int main(void) {
@@ -339,7 +347,7 @@ int main(void) {
   __set_vbr((unsigned)vectors);
   for (i = 0; i < MAX_TASKS; i++) tasks[i].state = T_FREE;
   tasks[0].state = T_RUN; tasks[0].prio = 100; cur = 0;
-  k_task_create(idle_task, 256, 0);
+  { int idle = k_task_create(idle_task, 256, 0); ((struct Ctx *)tasks[idle].ksp)->fmt_sr |= 0x2000; }
   k_task_create(app_wrapper, 16384, 5);
   REG(TIMER_BASE + TMR_LOAD) = TICK_US; REG(TIMER_BASE + TMR_CTRL) = 7;
   REG(BRIDGE_BASE + BR_IRQ_MASK) = IRQ_TIMER;
