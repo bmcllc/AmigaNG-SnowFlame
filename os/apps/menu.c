@@ -4,36 +4,13 @@
  * Dados do disco: sys/font.raw, sys/font.adv, sys/logo.raw, sys/icons.raw. Jogos: games/NOME.bin (iniciados por os_reboot). */
 #include "snowos_all.c"
 
-#ifndef TF_A8
-#define TF_A8 8
-#endif
-#ifndef TF_ARGB4444
-#define TF_ARGB4444 2
-#endif
+#include "ui.h"
 
-#define SW 640
-#define SH 480
-#define QOFF 2048                       /* geometria em 1/4 de pixel; tabela de floats cobre -512..+1535 px */
-#define NQ 8192
-#define A_FONT  0x01400000
 #define A_LOGO  0x01410000
 #define A_ICONS 0x01420000
-#define A_FX    0x01440000              /* tabelas de floats: FX[NQ], UVT[1025], CT[256] */
-#define A_UVT   (A_FX + NQ * 4)
-#define A_CT    (A_UVT + 1032 * 4)
-#define A_VB    0x01500000
-#define A_CMD   0x01480000
-#define A_MC    0x01600000
-#define MAXV    9000
-#define RT0 VRAM_BASE
-#define RT1 (VRAM_BASE + 0x200000)
-
 #define C_WHITE 0xFFFFFFFFu
 #define N_ITEMS 5
 
-static unsigned *FX = (unsigned *)A_FX, *UVT = (unsigned *)A_UVT, *CT = (unsigned *)A_CT, *VB = (unsigned *)A_VB, *CMD = (unsigned *)A_CMD;
-static int vn;
-static unsigned char adv[128];
 static int tick, sel, scroll_f, state, panel_item, list_sel, vol = 200, fade, boot_t, boot_count, mc_ok;
 static unsigned keys_prev;
 static int flake_x[48], flake_y[48], flake_s[48];
@@ -44,85 +21,6 @@ static int rt_cur;
 enum { ST_BOOT, ST_MENU, ST_PANEL };
 static const char *item_name[N_ITEMS] = { "GAMES", "MEMORY CARD", "SYSTEM", "DISC", "SETTINGS" };
 static const char *item_desc[N_ITEMS] = { "Launch a game from the disc", "Saved data and boot counter", "Hardware and OS information", "Contents of the inserted disc", "Volume and sound test" };
-
-/* ------------------------------ matemática inteira ------------------------------ */
-static int isin(int a) {                         /* a: 1024 = volta; resultado em +-65536 (parábola, ~1%) */
-  int ph = a & 1023, h = ph & 511, v = h * (512 - h);
-  return ph >= 512 ? -v : v;
-}
-static int icos(int a) { return isin(a + 256); }
-static int iabs(int x) { return x < 0 ? -x : x; }
-static int imin(int a, int b) { return a < b ? a : b; }
-static int imax(int a, int b) { return a > b ? a : b; }
-
-/* ------------------------------ formatação ------------------------------ */
-static int bput_num(char *b, int n, unsigned v, unsigned base, int neg, int width, int zero) {
-  char tmp[16]; int k = 0, pad, o = n; const char *dig = "0123456789abcdef";
-  if (v == 0) tmp[k++] = '0';
-  while (v) { tmp[k++] = dig[v % base]; v = v / base; }
-  pad = width - k - (neg ? 1 : 0);
-  if (neg && zero) b[o++] = '-';
-  while (pad-- > 0) b[o++] = zero ? '0' : ' ';
-  if (neg && !zero) b[o++] = '-';
-  while (k) b[o++] = tmp[--k];
-  return o;
-}
-static void ksprintf(char *b, const char *fmt, ...) {
-  va_list ap; int n = 0;
-  va_start(ap, fmt);
-  while (*fmt) {
-    if (*fmt != '%') { b[n++] = *fmt++; continue; }
-    fmt++;
-    { int zero = 0, width = 0;
-      if (*fmt == '0') { zero = 1; fmt++; }
-      while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
-      if (*fmt == 'd') { int v = va_arg(ap, int); n = v < 0 ? bput_num(b, n, (unsigned)-v, 10, 1, width, zero) : bput_num(b, n, (unsigned)v, 10, 0, width, zero); }
-      else if (*fmt == 'u') n = bput_num(b, n, va_arg(ap, unsigned), 10, 0, width, zero);
-      else if (*fmt == 'x') n = bput_num(b, n, va_arg(ap, unsigned), 16, 0, width, zero);
-      else if (*fmt == 's') { const char *s = va_arg(ap, const char *); while (*s) b[n++] = *s++; }
-      else if (*fmt == 'c') b[n++] = (char)va_arg(ap, int);
-      else if (*fmt == '%') b[n++] = '%';
-      if (*fmt) fmt++;
-    }
-  }
-  b[n] = 0; va_end(ap);
-}
-
-/* ------------------------------ vértices ------------------------------ */
-static void vtx(int x, int y, int z, unsigned argb, int u, int v) {
-  unsigned *p = VB + vn * 12;
-  p[0] = FX[x + QOFF]; p[1] = FX[y + QOFF]; p[2] = UVT[z]; p[3] = 0x3F800000u;
-  p[4] = CT[(argb >> 16) & 255]; p[5] = CT[(argb >> 8) & 255]; p[6] = CT[argb & 255]; p[7] = CT[argb >> 24];
-  p[8] = UVT[u]; p[9] = UVT[v]; p[10] = 0; p[11] = 0;
-  vn++;
-}
-static void quad4(int x0, int y0, int x1, int y1, unsigned c00, unsigned c10, unsigned c01, unsigned c11, int u0, int v0, int u1, int v1) {
-  if (vn + 6 > MAXV) return;
-  vtx(x0, y0, 0, c00, u0, v0); vtx(x1, y0, 0, c10, u1, v0); vtx(x1, y1, 0, c11, u1, v1);
-  vtx(x0, y0, 0, c00, u0, v0); vtx(x1, y1, 0, c11, u1, v1); vtx(x0, y1, 0, c01, u0, v1);
-}
-static void quadc(int x0, int y0, int x1, int y1, unsigned c) { quad4(x0, y0, x1, y1, c, c, c, c, 0, 0, 0, 0); }
-static unsigned with_alpha(unsigned argb, int a) { return ((unsigned)a << 24) | (argb & 0xFFFFFF); }
-static unsigned mix(unsigned c0, unsigned c1, int t) {   /* t 0..256 */
-  unsigned r = 0; int sh;
-  for (sh = 0; sh < 32; sh += 8) r |= (unsigned)((((c0 >> sh) & 255) * (256 - t) + ((c1 >> sh) & 255) * t) >> 8) << sh;
-  return r;
-}
-
-/* ------------------------------ texto ------------------------------ */
-static int text_w(const char *s, int sc) { int w = 0; while (*s) { int c = *s++ & 127; w += ((int)adv[c] + 1) * sc / 100; } return w; }
-static void text(int x, int y, const char *s, int sc, unsigned argb) {
-  int q = x * 4;
-  while (*s) {
-    int c = *s++ & 127, a = adv[c], cx = (c & 15) * 16, cy = (c >> 4) * 16;
-    if (c > 32 && a) {
-      int gw = (a + 2) * sc / 100 * 4, gh = 16 * sc / 100 * 4, tx = cx + (16 - a) / 2 - 1;
-      quad4(q, y * 4, q + gw, y * 4 + gh, argb, argb, argb, argb, tx * 4, cy * 8, (tx + a + 2) * 4, (cy + 16) * 8);
-    }
-    q += (a + 1) * sc / 100 * 4;
-  }
-}
-static void text_c(int cx, int y, const char *s, int sc, unsigned argb) { text(cx - text_w(s, sc) / 2, y, s, sc, argb); }
 
 /* ------------------------------ entrada ------------------------------ */
 #define K_LEFT 1
@@ -151,13 +49,6 @@ static void beep(int v, int fmt_ok) {
 }
 
 /* ------------------------------ cartão de memória ------------------------------ */
-static int mc_do(unsigned cmd, unsigned sector, unsigned count, unsigned addr) {
-  unsigned st;
-  REG(MCARD_BASE + MC_SECTOR) = sector; REG(MCARD_BASE + MC_COUNT) = count; REG(MCARD_BASE + MC_ADDR) = addr; REG(MCARD_BASE + MC_CMD) = cmd;
-  do { st = REG(MCARD_BASE + MC_STATUS); if (st & 1) task_yield(); } while (st & 1);
-  REG(MCARD_BASE + MC_STATUS) = 6;
-  return (st & 4) ? -1 : 0;
-}
 static void mc_boot_counter(void) {
   unsigned *b = (unsigned *)A_MC; int i;
   mc_ok = (REG(MCARD_BASE + MC_STATUS) & 8) != 0;
@@ -285,35 +176,26 @@ static void panel_text(void) {
   }
 }
 
-/* ------------------------------ renderização: segmentos de vértices com estado próprio ------------------------------ */
-enum { SEG_OPAQUE, SEG_ALPHA, SEG_LOGO, SEG_ICONS, SEG_TEXT };
-#define MAXSEG 24
-static int seg_first[MAXSEG], seg_kind[MAXSEG], nseg;
-static void seg(int kind) {
-  if (nseg > 0 && seg_first[nseg] == vn) nseg--;               /* descarta segmento vazio */
-  if (nseg < MAXSEG - 1) nseg++;
-  seg_first[nseg] = vn; seg_kind[nseg] = kind;
-}
+/* ------------------------------ renderização ------------------------------ */
 static void render(unsigned rt) {
-  GxList l; int i, kind;
-  vn = 0; nseg = 0; seg_first[0] = 0; seg_kind[0] = SEG_OPAQUE;
+  int i;
+  ui_begin();
   quad4(0, 0, SW * 4, SH * 4, 0xFF050B24u, 0xFF050B24u, 0xFF1C1250u, 0xFF3A1A5Cu, 0, 0, 0, 0);
-  seg(SEG_ALPHA); draw_background_waves(); draw_snow(); draw_cube(SW / 2, 215, 85, state == ST_PANEL ? 24 : 46);
+  ui_seg(UI_ALPHA); draw_background_waves(); draw_snow(); draw_cube(SW / 2, 215, 85, state == ST_PANEL ? 24 : 46);
+  ui_seg_tex(A_LOGO, 9, 6, TF_A8);
   if (state == ST_BOOT) {
     int a = imin(255, boot_t * 255 / 60); if (boot_t > 120) a = imax(0, 255 - (boot_t - 120) * 255 / 30);
-    seg(SEG_LOGO);
     quad4(64 * 4, 190 * 4, 576 * 4, 254 * 4, with_alpha(0xFFFFFF, a), with_alpha(0xFFFFFF, a), with_alpha(0xB0C8FF, a), with_alpha(0xB0C8FF, a), 0, 0, 1024, 1024);
   } else {
-    seg(SEG_LOGO);
     quad4(170 * 4, 14 * 4, 470 * 4, 62 * 4, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFB0C8FFu, 0xFFB0C8FFu, 0, 0, 1024, 1024);
   }
   if (state == ST_MENU) {
-    seg(SEG_ALPHA); for (i = 0; i < N_ITEMS; i++) draw_card(i);
-    seg(SEG_ICONS); for (i = 0; i < N_ITEMS; i++) draw_icon(i);
+    ui_seg(UI_ALPHA); for (i = 0; i < N_ITEMS; i++) draw_card(i);
+    ui_seg_tex(A_ICONS, 9, 6, TF_ARGB4444); for (i = 0; i < N_ITEMS; i++) draw_icon(i);
   } else if (state == ST_PANEL) {
-    seg(SEG_ALPHA); panel_box(80, 100, 560, 420); panel_shapes();
+    ui_seg(UI_ALPHA); panel_box(80, 100, 560, 420); panel_shapes();
   }
-  seg(SEG_TEXT);
+  ui_seg_tex(A_FONT, 8, 7, TF_A8);
   if (state == ST_MENU) {
     text_c(SW / 2, 310, item_name[sel], 190, 0xFFFFFFFFu);
     text_c(SW / 2, 352, item_desc[sel], 100, 0xFFB8C4F0u);
@@ -321,29 +203,7 @@ static void render(unsigned rt) {
   } else if (state == ST_PANEL) panel_text();
   else if (boot_t > 40 && boot_t < 140) text_c(SW / 2, 270, "Amiga SF-100  -  SnowOS", 100, with_alpha(0xB8C8FF, imin(255, (boot_t - 40) * 6)));
   { char b[40]; ksprintf(b, "%d:%02d", (int)(os_ticks() / 60000), (int)((os_ticks() / 1000) % 60)); text(SW - 70, SH - 28, b, 90, 0xFF7080B8u); }
-  seg(SEG_OPAQUE); nseg--;                                      /* fecha o último segmento */
-  nseg++;
-  os_cache_flush(A_VB, (unsigned)vn * 48);
-  gx_begin(&l, CMD, 2048);
-  gx_set_rt(&l, rt, SW * 4, SW, SH);
-  gx_clear(&l, 0xFF000000u, 0x3F800000, CLR_COLOR | CLR_DEPTH);
-  gx_vertex_base(&l, A_VB); gx_blend(&l, BF_SRC_ALPHA, BF_INV_SRC_ALPHA);
-  for (i = 0; i < nseg; i++) {
-    int first = seg_first[i], count = (i + 1 < nseg ? seg_first[i + 1] : vn) - first;
-    kind = seg_kind[i];
-    if (count <= 0) continue;
-    if (kind == SEG_OPAQUE) gx_state(&l, 0);
-    else if (kind == SEG_ALPHA) gx_state(&l, ST_BLEND);
-    else {
-      if (kind == SEG_LOGO) gx_set_tex(&l, 0, A_LOGO, 9, 6, TF_A8, TFLAG_CLAMP, 1);
-      else if (kind == SEG_ICONS) gx_set_tex(&l, 0, A_ICONS, 9, 6, TF_ARGB4444, TFLAG_CLAMP, 1);
-      else gx_set_tex(&l, 0, A_FONT, 8, 7, TF_A8, TFLAG_CLAMP, 1);
-      gx_texenv(&l, 0, TE_MODULATE); gx_state(&l, ST_BLEND | ST_TEX0 | ST_BILINEAR);
-    }
-    gx_draw_arrays(&l, first, count, PRIM_TRIS);
-  }
-  gx_end(&l);
-  gx_submit(&l);
+  ui_end(rt, 0xFF000000u);
 }
 
 /* ------------------------------ lógica ------------------------------ */
@@ -391,12 +251,9 @@ static void update(unsigned nk) {
 }
 
 static void load_assets(void) {
-  int i, q;
-  fs_mount();
-  fs_load("sys/font.adv", adv, 128); fs_load("sys/font.raw", (void *)A_FONT, 32768); fs_load("sys/logo.raw", (void *)A_LOGO, 32768); fs_load("sys/icons.raw", (void *)A_ICONS, 65536);
-  for (q = 0; q < NQ; q++) FX[q] = gx_f32_fx((q - QOFF) << 14);
-  for (i = 0; i <= 1024; i++) UVT[i] = gx_f32_fx(i << 6);
-  for (i = 0; i < 256; i++) CT[i] = gx_f32_fx((i << 16) / 255);
+  int i;
+  ui_init();
+  fs_load("sys/logo.raw", (void *)A_LOGO, 32768); fs_load("sys/icons.raw", (void *)A_ICONS, 65536);
   for (i = 0; i < 48; i++) { flake_x[i] = (i * 137) % SW; flake_y[i] = (i * 71) % SH; flake_s[i] = 2 + i % 3; }
   snd_sine(tone_tick, 256, 32, 11000); snd_load(0, tone_tick, sizeof tone_tick);
   snd_sine(tone_ok, 1024, 128, 9000); snd_load(0x2000, tone_ok, sizeof tone_ok);
@@ -404,8 +261,7 @@ static void load_assets(void) {
 
 void app_main(void) {
   int back = 1;
-  gx_init(); snd_init(); load_assets(); mc_boot_counter();
-  gx_video_mode(VMODE_480P); gx_layer(0, RT0, SW * 4, LF_ENABLE); gx_video_start();
+  load_assets(); mc_boot_counter();
   state = ST_BOOT;
   os_printf("[menu] SnowFlame Dashboard iniciado (boots no cartao: %d)\n", boot_count);
   for (;;) {

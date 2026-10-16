@@ -81,7 +81,7 @@ int main(int argc, char** argv) {
   }
   std::vector<SffsFile> files; std::map<std::string, u32> flags;
   auto compile = [&](const std::string& disc_path, const std::string& src) {
-    CcOptions opt; opt.include_dirs = {"os", "os/include"}; std::string code = slurp_s(src);
+    CcOptions opt; opt.include_dirs = {"os", "os/include", "os/apps"}; std::string code = slurp_s(src);
     CcResult r = cc_compile(code, src, opt); if (!r.ok) { std::fprintf(stderr, "%s: %s\n", src.c_str(), r.error.c_str()); std::exit(1); }
     if (r.base != abi::IPL_LOAD_ADDR) { std::fprintf(stderr, "%s: base inesperada\n", src.c_str()); std::exit(1); }
     files.push_back({disc_path, r.image}); flags[disc_path] = r.entry;

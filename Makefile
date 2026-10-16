@@ -45,7 +45,9 @@ build/sf100_boot: tools/sfboot_main.cpp $(LIB) $(wildcard src/*.h)
 	$(CXX) $(CXXFLAGS) $< $(LIB) -o $@
 
 # DVD do sistema (menu + recursos + jogos) e boot sem janela
-dvd: build/sf100_mkdvd os/apps/menu.c $(wildcard os/*.c) $(wildcard os/include/*.h) $(wildcard assets/*)
+GAMES ?= --game snowroids=os/apps/games/snowroids.c
+
+dvd: build/sf100_mkdvd os/apps/menu.c $(wildcard os/apps/*.h) $(wildcard os/apps/games/*.c) $(wildcard os/*.c) $(wildcard os/include/*.h) $(wildcard assets/*)
 	mkdir -p out && ./build/sf100_mkdvd -o out/snowflame.dvd $(GAMES)
 
 boot: dvd build/sf100_boot

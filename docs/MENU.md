@@ -7,3 +7,8 @@
 **Ferramentas.**
 - `make dvd` / `sf100_mkdvd -o out/snowflame.dvd [--game nome=arquivo.c]... [--data caminho=arquivo]...` compila o menu e os jogos (snowcc), gera os ícones e junta `assets/` (fonte Lato/OFL; regenere com `python3 tools/mkassets.py`) num DVD SnowFS.
 - `sf100_boot disco.dvd --frames N --shot F --key F:right|left|up|down|enter|esc|space --pad F:mascara --mc cartao.bin` liga o SF-100 sem janela, injeta entradas e grava PNG dos quadros.
+
+## SnowRoids (`os/apps/games/snowroids.c`, `games/snowroids.bin`)
+Jogo original, estilo Asteroids, para o SnowOS Native. Gráficos vetoriais neon (cada linha é um quad fino desenhado duas vezes com mistura aditiva: halo largo + núcleo), física em ponto fixo, objetos que dão a volta na tela (cópias nas bordas), ondas crescentes, vida extra a cada 10 000 pontos, partículas, estrelas, pausa, recorde gravado no **setor 8** do cartão de memória e som gerado em tempo de execução (tiro, explosões de 3 tamanhos, propulsor em laço, jingle) pela SnowPaula. Controles: girar = setas/A·D ou direcional; propulsor = cima/W ou botão A; tiro = espaço ou botão B; pausa = P/Start; menu = Esc/Select (volta pelo IPL).
+Biblioteca compartilhada com o menu: `os/apps/ui.h` (vértices por tabelas de float, texto, segmentos de estado do FlameCore, cartão). Teste: `tests/test_apps.cpp`.
+Para colocar o jogo no disco: `make dvd`; para jogar: `sf100_boot out/snowflame.dvd --frames 700 --shot 600 --key 80:space --key 100:enter --key 115:enter --key 235:enter --pad 300:0x24`.
