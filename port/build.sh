@@ -6,11 +6,12 @@ set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 if [ -n "$SF_M68K_CROSS" ]; then export PATH="$SF_M68K_CROSS/usr/bin:$PATH"; export LD_LIBRARY_PATH="$SF_M68K_CROSS/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"; fi
 CC=${CC:-m68k-linux-gnu-gcc-14}
+GCCINC=$($CC -print-file-name=include)   # cabeçalhos freestanding do GCC (stddef, stdarg, stdint, float, limits); /usr/include do host fica de fora
 OBJCOPY=${OBJCOPY:-m68k-linux-gnu-objcopy}
 OUT=$1; shift
-CFLAGS=(-mcpu=5475 -O2 -g0 -ffreestanding -fno-builtin-printf -fno-pic -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables -mno-pcrel "-I$HERE/rt/include" -Wall -Wno-misleading-indentation)
+CFLAGS=(-mcpu=5475 -O2 -g0 -ffreestanding -nostdinc "-isystem$GCCINC" -fno-builtin-printf -fno-pic -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables -mno-pcrel "-I$HERE/rt/include" -Wall -Wno-misleading-indentation)
 TMP=$(mktemp -d)
-for f in "$HERE/rt/crt0.S" "$HERE/rt/libc.c" "$HERE/rt/libm.c" "$HERE/rt/libgcc.c" "$@"; do
+for f in "$HERE/rt/crt0.S" "$HERE/rt/libc.c" "$HERE/rt/libc2.c" "$HERE/rt/setjmp.S" "$HERE/rt/libm.c" "$HERE/rt/libgcc.c" "$@"; do
   $CC "${CFLAGS[@]}" $EXTRA_CFLAGS -c "$f" -o "$TMP/$(basename "$f").o"
 done
 $CC "${CFLAGS[@]}" -nostdlib -nostartfiles -nodefaultlibs -static -Wl,--no-warn-rwx-segments -Wl,--build-id=none -T "$HERE/rt/link.ld" -Wl,-Map,"${OUT%.bin}.map" -o "${OUT%.bin}.elf" "$TMP"/*.o

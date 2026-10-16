@@ -1,0 +1,15 @@
+normalize: len=4.1003 n=(0.3658 -0.4878 0.7926)
+angles: f=(-0.6645 0.6645 -0.3420) r=(0.7384 0.6544 -0.1632) u=(-0.1154 0.3610 0.9254)
+perp: -0.2418 0.2418 0.9397 dot=0.00000
+matmul: -0.0096 -0.9998 0.0192 / -0.2966 0.0212 0.9548
+vectoangles: -340.000 135.000 0.000
+anglenorm: 354.501 5.499 20.000
+boxontoplane: 3 signbits=0
+rotate: -0.0000 1.0000 0.0000
+stricmp: 0 1 0  strncmp: 0  clean: [  HelloWorld!  ] len=4
+info: \model\sarge/blue\skill\3\name\Visor | name=Visor skill=3 model=sarge/blue
+tok<map> tok<q3dm17> tok<quoted token> tok<3.5e2> tok<next> 
+va: 42-x- 3.14 0x0000beef
+sprintf: frag_7_Z  atof=-12.375 atoi=42
+sqrt: 35.13545 0.70693  floor: -1  shortswap: 3412 longswap: 44332211
+float sum: 1.0000001  (int)1000  rint: 2 -2

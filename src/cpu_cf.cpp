@@ -294,7 +294,7 @@ void Cpu::exec() {
           int dr = x & 7; u32 q, r; u32 f = 0;
           if (sg) { i32 a_ = (i32)d[dl], b_ = (i32)src; if (a_ == INT32_MIN && b_ == -1) { q = (u32)a_; r = 0; f |= V; } else { q = (u32)(a_ / b_); r = (u32)(a_ % b_); } }
           else { q = d[dl] / src; r = d[dl] % src; }
-          if (dr != dl) d[dr] = r; d[dl] = q;
+          if (dr != dl) d[dr] = r; else d[dl] = q;                   // ColdFire: REMS/REMU.L (Dr != Dq) guardam só o resto e preservam o dividendo; DIVS/DIVU.L (Dr == Dq) guardam o quociente
           if (q == 0) f |= Z; if (q & 0x80000000u) f |= N; setccr(f, N | Z | V | C); cyc += 19;
         } else {
           bool w64 = x & 0x400; int dh = x & 7; u64 pr; u32 f = 0;

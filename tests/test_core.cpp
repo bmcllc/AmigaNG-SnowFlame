@@ -193,12 +193,13 @@ TEST(cpu_multiply_divide) {
   Soc s; A a(CODE_BASE);
   a.moveq(-7, 0); a.moveq(6, 1); a.muls_l(A::D(1), 0);                      // -42
   a.movel(A::Imm(0x10000), A::D(2)); a.mulu_l(A::D(2), 2); a.move_from_sr(3);   // 0 com V
-  a.moveq(-43, 4); a.moveq(5, 5); a.divs_l(A::D(5), 4, 6);                  // q=-8 r=-3
+  a.moveq(-43, 4); a.moveq(5, 5); a.divs_l(A::D(5), 4, 6);                  // REMS.L: resto -3 em d6; o dividendo d4 fica intacto (o GCC conta com isso)
+  a.moveq(-43, 1); a.divs_l(A::D(5), 1, 1);                                 // DIVS.L (Dr == Dq): quociente -8 em d3
   a.movel(A::Imm(100000), A::D(7)); a.moveq(7, 5); a.divu_w(A::D(5), 7);    // (r<<16)|q
   a.halt();
   CHECK(run_prog(s, a));
   CHECK_EQ(s.cpu.d[0], (u32)-42); CHECK_EQ(s.cpu.d[2], 0); CHECK(s.cpu.d[3] & Cpu::V);
-  CHECK_EQ(s.cpu.d[4], (u32)-8); CHECK_EQ(s.cpu.d[6], (u32)-3); CHECK_EQ(s.cpu.d[7], (5u << 16) | 14285u);
+  CHECK_EQ(s.cpu.d[4], (u32)-43); CHECK_EQ(s.cpu.d[1], (u32)-8); CHECK_EQ(s.cpu.d[6], (u32)-3); CHECK_EQ(s.cpu.d[7], (5u << 16) | 14285u);
 }
 
 TEST(cpu_bit_ops_scc_and_signed_unsigned_compare) {

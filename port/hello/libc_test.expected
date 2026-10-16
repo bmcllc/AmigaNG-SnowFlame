@@ -1,0 +1,16 @@
+sscanf: n=7 a=12 b=-34 d=45.0 s=word t=abc
+sscanf2: n=3 u=42 a=-7 c=z
+sscanf3: n=2 ll=123456789012 f=3.25
+strtod: 3.141590 -5.000000 1.000e-05 100.0
+strtol: -31 511 1295 4000000000
+ctype: 10111 Qq
+longjmp valor=7
+gmtime: 2023-11-14 22:13:20 Tue Nov yday=317 wday=2 mktime=1700000000
+qsort/bsearch: 159 5
+ram file: seta name "Visor"
+ram file: seta skill 3
+tail=fim pos=34/18 eof=0
+eof=1
+fopen falha: 1 errno=2
+snprintf: [   3.142] [42      ] [+5] [-0002.50] [2] [   ab] [xy] [1.234568e+05]
+math: 5.000000 3.000000 10.000000 3.141593 1.500000 0.462117

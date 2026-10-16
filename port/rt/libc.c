@@ -119,8 +119,8 @@ void qsort(void *base, size_t n, size_t sz, int (*cmp)(const void *, const void 
 }
 
 /* ------------------------------ printf ------------------------------ */
-struct out { char *buf; size_t cap, n; };
-static void oc(struct out *o, char c) { if (o->buf) { if (o->n + 1 < o->cap) o->buf[o->n] = c; } else SF_DBG_PUTC = (unsigned char)c; o->n++; }
+struct out { char *buf; size_t cap, n; int cons; };                  /* cons: escreve no console; senão grava em buf (buf NULL = só conta) */
+static void oc(struct out *o, char c) { if (o->cons) SF_DBG_PUTC = (unsigned char)c; else if (o->buf && o->n + 1 < o->cap) o->buf[o->n] = c; o->n++; }
 static void pad(struct out *o, int n, char c) { while (n-- > 0) oc(o, c); }
 static void fmt_uint(struct out *o, unsigned long long v, int base, int upper, int width, int zero, int left, int prec, const char *sign) {
   char tmp[72]; int k = 0, len, sl = (int)strlen(sign); const char *dig = upper ? "0123456789ABCDEF" : "0123456789abcdef";
@@ -160,7 +160,7 @@ static void fmt_double(struct out *o, double v, char conv, int width, int zero, 
   } else {
     double scale = 1, r; unsigned long long ip, fp;
     for (i = 0; i < prec; i++) scale *= 10;
-    r = v * scale + 0.5; if (r >= 1.8e19) { ip = (unsigned long long)v; fp = 0; } else { unsigned long long all = (unsigned long long)r; ip = all / (unsigned long long)scale; fp = all % (unsigned long long)scale; }
+    r = v * scale; if (r >= 1.8e19) { ip = (unsigned long long)v; fp = 0; } else { unsigned long long all = (unsigned long long)r; double rem = r - (double)all; if (rem > 0.5 || (rem == 0.5 && (all & 1))) all++; ip = all / (unsigned long long)scale; fp = all % (unsigned long long)scale; }   /* arredonda para par nos empates, como o glibc */
     { char d[40]; int nd = 0; if (ip == 0) d[nd++] = '0'; while (ip) { d[nd++] = (char)('0' + (int)(ip % 10)); ip /= 10; } while (nd) tmp[k++] = d[--nd]; }
     if (prec > 0) { tmp[k++] = '.'; for (i = prec - 1; i >= 0; i--) { unsigned long long p = 1; int j; for (j = 0; j < i; j++) p *= 10; tmp[k++] = (char)('0' + (int)((fp / p) % 10)); } }
   }
@@ -188,9 +188,9 @@ static int vfmt(struct out *o, const char *f, va_list ap) {
   if (o->buf && o->cap) o->buf[o->n < o->cap ? o->n : o->cap - 1] = 0;
   return (int)o->n;
 }
-int vsnprintf(char *b, size_t n, const char *f, va_list ap) { struct out o = { b, n, 0 }; return vfmt(&o, f, ap); }
-int vsprintf(char *b, const char *f, va_list ap) { struct out o = { b, (size_t)-1, 0 }; return vfmt(&o, f, ap); }
-int vprintf(const char *f, va_list ap) { struct out o = { 0, 0, 0 }; return vfmt(&o, f, ap); }
+int vsnprintf(char *b, size_t n, const char *f, va_list ap) { struct out o = { b, n, 0, 0 }; return vfmt(&o, f, ap); }
+int vsprintf(char *b, const char *f, va_list ap) { struct out o = { b, (size_t)-1, 0, 0 }; return vfmt(&o, f, ap); }
+int vprintf(const char *f, va_list ap) { struct out o = { 0, 0, 0, 1 }; return vfmt(&o, f, ap); }
 int printf(const char *f, ...) { va_list ap; int r; va_start(ap, f); r = vprintf(f, ap); va_end(ap); return r; }
 int sprintf(char *b, const char *f, ...) { va_list ap; int r; va_start(ap, f); r = vsprintf(b, f, ap); va_end(ap); return r; }
 int snprintf(char *b, size_t n, const char *f, ...) { va_list ap; int r; va_start(ap, f); r = vsnprintf(b, n, f, ap); va_end(ap); return r; }

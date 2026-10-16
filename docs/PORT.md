@@ -22,9 +22,17 @@ port/build.sh out.bin programa.c [mais.c ...]     # imagem plana carregável em 
 ```
 `port/hello/hello.c` exercita FPU, 64 bits, structs por valor, `qsort`, `malloc` e `printf`; o teste `gcc_coldfire_hello_runs_with_correct_fpu_int64_and_printf` compara a saída com valores conferidos no host (ignorado sem toolchain).
 
-## Roteiro do ioquake3
+## Estado do ioquake3 (Fase 2 concluída)
+Fontes em `Games-To-Port/ioq3` (clone raso de github.com/ioquake/ioq3). `port/ioq3/check.sh` compila para ColdFire **186 arquivos sem erro**: `qcommon` (BSP/colisão, cvar/cmd, arquivos+unzip, VM interpretada, msg/net_chan), `server`, `botlib`, `client` (som DMA, cinemáticas, consoles; sem SDL/OpenAL/HTTP), `game` (qagame), `cgame`, `q3_ui` e `zlib` (inflate, `Z_SOLO`).
+Para isso o runtime ganhou (`port/rt/`): `libc2.c` (ctype, errno, strings extras, tempo `time/clock/gmtime/mktime/strftime`, `strtod`, `sscanf`, `bsearch`), **stdio completo sobre o SnowFS** (`fopen/fread/fseek/fgets/fprintf...`; arquivos do DVD lidos por DMA com cache de setor, arquivos gravados em RAM; `sf_fs.h` expõe a listagem), `setjmp.S`, `endian.h` big-endian, `limits.h`, stubs de `SDL.h`/`dlfcn.h`/`netinet/in.h`. O build usa `-nostdinc` (o `/usr/include` do host fica de fora).
+`port/ioq3/q3smoke.c` roda código real do ioq3 (`q_shared.c`, `q_math.c`: vetores, ângulos, matrizes, tokenizer, infostrings, `va`) no emulador e a saída é **idêntica byte a byte** à do mesmo fonte no host x86 (`q3smoke.expected`; teste `ioq3_real_code_on_coldfire_matches_x86_host_output`). `SF_PORT_SLOW=1` ativa o teste que compila os 186 arquivos.
+
+### Símbolos ainda indefinidos do motor (= a camada de plataforma da Fase 3)
+`main`, `Sys_*` (Init, Error, Print, Quit, Milliseconds, ListFiles/FreeFileList, FOpen, Mkdir, LoadGameDll/UnloadDll, DefaultInstallPath/HomePath..., ConsoleInput, GetClipboardData, RandomBytes, SetEnv...), `NET_*` e `Sys_SendPacket/StringToAdr/IsLANAddress/ShowIP` (rede nula), `IN_*` (entrada: HID/controles), `SNDDMA_*` (som sobre a SnowPaula), `GetRefAPI` (renderer próprio sobre o FlameCore), `S_AL_Init` (stub) e `crc32/inflate*` (zlib já compila).
+
+## Roteiro
 1. (feito) Runtime freestanding e hello world em ColdFire real.
-2. libc ampliada para o que o ioq3 usa (`stdio` com arquivos sobre o SnowFS, `setjmp`, `time`, `errno`, `ctype`, `assert`) e ferramenta para empacotar `.pk3`/dados no DVD.
-3. Camada de plataforma (`sys_*`): tempo, entrada (HID/controles), arquivos (SnowFS), memória.
-4. Renderer próprio sobre o FlameCore (BSP + lightmaps em multitextura), som sobre a SnowPaula.
-5. Dados livres do OpenArena.
+2. (feito) libc ampliada e compilação de todos os módulos do ioq3.
+3. Camada de plataforma (`sys_snowflame.c`, rede nula, `IN_*`, `SNDDMA_*`) e ligação do motor; módulos de jogo ligados estaticamente (sem `dlopen`) ou QVM da pk3.
+4. Renderer próprio sobre o FlameCore (BSP + lightmaps em multitextura, shaders simples) e carga de `.pk3` do DVD (zip do SnowFS).
+5. Dados livres do OpenArena e menu/IPL para iniciar o jogo.
