@@ -4,7 +4,7 @@ SRC := src/bus.cpp src/cpu_cf.cpp src/vpu.cpp src/flamecore.cpp src/chipset.cpp 
 OBJ := $(SRC:src/%.cpp=build/%.o)
 LIB := build/libsnowflame.a
 
-all: $(LIB) build/sf100_tests build/sf100_demo build/snowcc build/sfdbg build/sfprof build/m68kxlat build/sfclassic build/sf100_techdemos build/sf100_mkdvd build/sf100_boot
+all: $(LIB) build/sf100_tests build/sf100_demo build/snowcc build/sfdbg build/sfprof build/m68kxlat build/sfclassic build/sf100_techdemos build/sf100_mkdvd build/sf100_boot build/sf100_run
 
 build/%.o: src/%.cpp $(wildcard src/*.h)
 	@mkdir -p build
@@ -39,6 +39,9 @@ build/sf100_techdemos: tools/techdemos_main.cpp $(LIB) $(wildcard src/*.h) $(wil
 	$(CXX) $(CXXFLAGS) -Idemo $< $(LIB) -o $@
 
 build/sf100_mkdvd: tools/mkdvd_main.cpp $(LIB) $(wildcard src/*.h)
+	$(CXX) $(CXXFLAGS) $< $(LIB) -o $@
+
+build/sf100_run: tools/sfrun_main.cpp $(LIB) $(wildcard src/*.h)
 	$(CXX) $(CXXFLAGS) $< $(LIB) -o $@
 
 build/sf100_boot: tools/sfboot_main.cpp $(LIB) $(wildcard src/*.h)
