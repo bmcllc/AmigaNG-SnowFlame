@@ -179,7 +179,7 @@ static int dvd_read(unsigned lba, unsigned n, void *dst) {
   unsigned st;
   cache_range(6, (unsigned)dst, n * SECT);                       /* flush + invalidate: a D-cache não é coerente com o DMA */
   DVD_REG(0x10) = 6; DVD_REG(0x04) = lba; DVD_REG(0x08) = n; DVD_REG(0x0C) = (unsigned)dst; DVD_REG(0x00) = 1;
-  do { st = DVD_REG(0x10); } while (st & 1);
+  do { st = DVD_REG(0x10); if (st & 1) BR_REG(0xF4) = 100; } while (st & 1);      /* BR_SLEEP_US: espera sem queimar instruções (seek/spin-up levam centenas de ms) */
   DVD_REG(0x10) = 6;
   cache_range(5, (unsigned)dst, n * SECT);
   return (st & 4) ? -1 : 0;

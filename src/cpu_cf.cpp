@@ -152,6 +152,7 @@ void Cpu::set_sr(u32 v) {
 }
 
 void Cpu::exception(int vec, u32 retpc, int newmask) {
+  exc_vec = vec; exc_pc = retpc; exc_addr = bus.fault_addr;
   u32 oldsr = sr; set_sr(sr | 0x2000); bus.mmu_bypass = true;   // pilha/vetores de exceção são acessos físicos
   if (newmask >= 0) sr = (sr & ~0x700u) | ((u32)newmask << 8);
   a[7] -= 8;

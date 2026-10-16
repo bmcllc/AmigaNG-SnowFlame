@@ -45,6 +45,7 @@ enum : u32 {
   BR_CACHE_ADDR = 0x024,
   BR_CACHE_LEN = 0x028,
   BR_CACHE_CTRL = 0x02C,// bit0: cache de dados habilitada
+  BR_SLEEP_US = 0x0F4,  // W: a CPU espera N microssegundos (os dispositivos continuam); usado por Sleep() de software sem timer/IRQ
   BR_SYS_CTRL = 0x0F0,  // W: bit0 = reinicia o sistema e carrega do DVD o programa cujo caminho (NUL-terminado, <= 63 B) está em SRAM_BASE
   BR_SEM0 = 0x040,      // 16 semáforos: leitura = P (decrementa se >0, devolve valor antigo); escrita = V (soma valor, mín 1)
   BR_DMA0 = 0x100,      // 4 canais x 0x20

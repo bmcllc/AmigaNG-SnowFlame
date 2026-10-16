@@ -9,7 +9,7 @@ CODE="$IOQ3/code"
 CFLAGS_COMMON=(-mcpu=5475 -O2 -g0 -ffreestanding -nostdinc "-isystem$GCCINC" -fno-builtin-printf -fno-pic -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables -mno-pcrel
   "-I$HERE/rt/include" "-I$HERE/ioq3/include" "-I$CODE/qcommon" "-I$CODE/client" "-I$CODE/server" "-I$CODE/renderercommon" "-I$CODE/botlib" "-I$CODE/thirdparty/zlib-1.3.1"
   -Wno-misleading-indentation -Wno-stringop-overflow -Wno-array-bounds -w
-  '-DPRODUCT_VERSION="1.36_sf100"' '-DARCH_STRING="m68k"' -DBOTLIB -DUSE_INTERNAL_ZLIB -DSF100 -DNO_VM_COMPILED)
+  '-DPRODUCT_VERSION="1.36_sf100"' '-DARCH_STRING="m68k"' -DBOTLIB -DSTANDALONE '-DBASEGAME="baseoa"' -DDEF_COMZONEMEGS=12 -DDEF_COMHUNKMEGS=32 -DMAX_RAW_STREAMS=3 -DUSE_INTERNAL_ZLIB -DSF100 -DNO_VM_COMPILED)
 # grupos de fontes (relativos a code/)
 QCOMMON=(qcommon/cm_load.c qcommon/cm_patch.c qcommon/cm_polylib.c qcommon/cm_test.c qcommon/cm_trace.c qcommon/cmd.c qcommon/common.c qcommon/cvar.c qcommon/files.c
   qcommon/huffman.c qcommon/md4.c qcommon/md5.c qcommon/msg.c qcommon/net_chan.c qcommon/q_math.c qcommon/q_shared.c qcommon/vm.c qcommon/vm_interpreted.c qcommon/ioapi.c qcommon/unzip.c)

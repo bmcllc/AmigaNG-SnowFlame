@@ -105,6 +105,7 @@
 #define BR_CACHE_LEN       0x028
 #define BR_CACHE_CTRL      0x02C
 #define BR_SYS_CTRL        0x0F0
+#define BR_SLEEP_US        0x0F4
 #define BR_SEM0            0x040
 #define BR_DMA0            0x100
 #define CACHE_FLUSH_ALL    1

@@ -27,12 +27,18 @@ Fontes em `Games-To-Port/ioq3` (clone raso de github.com/ioquake/ioq3). `port/io
 Para isso o runtime ganhou (`port/rt/`): `libc2.c` (ctype, errno, strings extras, tempo `time/clock/gmtime/mktime/strftime`, `strtod`, `sscanf`, `bsearch`), **stdio completo sobre o SnowFS** (`fopen/fread/fseek/fgets/fprintf...`; arquivos do DVD lidos por DMA com cache de setor, arquivos gravados em RAM; `sf_fs.h` expõe a listagem), `setjmp.S`, `endian.h` big-endian, `limits.h`, stubs de `SDL.h`/`dlfcn.h`/`netinet/in.h`. O build usa `-nostdinc` (o `/usr/include` do host fica de fora).
 `port/ioq3/q3smoke.c` roda código real do ioq3 (`q_shared.c`, `q_math.c`: vetores, ângulos, matrizes, tokenizer, infostrings, `va`) no emulador e a saída é **idêntica byte a byte** à do mesmo fonte no host x86 (`q3smoke.expected`; teste `ioq3_real_code_on_coldfire_matches_x86_host_output`). `SF_PORT_SLOW=1` ativa o teste que compila os 186 arquivos.
 
-### Símbolos ainda indefinidos do motor (= a camada de plataforma da Fase 3)
-`main`, `Sys_*` (Init, Error, Print, Quit, Milliseconds, ListFiles/FreeFileList, FOpen, Mkdir, LoadGameDll/UnloadDll, DefaultInstallPath/HomePath..., ConsoleInput, GetClipboardData, RandomBytes, SetEnv...), `NET_*` e `Sys_SendPacket/StringToAdr/IsLANAddress/ShowIP` (rede nula), `IN_*` (entrada: HID/controles), `SNDDMA_*` (som sobre a SnowPaula), `GetRefAPI` (renderer próprio sobre o FlameCore), `S_AL_Init` (stub) e `crc32/inflate*` (zlib já compila).
+## Fase 3: o motor do ioq3 liga e roda no emulador
+`port/ioq3/build_ioq3.sh saida.bin` compila (com cache de objetos) e liga o motor completo: `qcommon`, `server`, `botlib`, `client`, `zlib`, a camada de plataforma e o runtime. Imagem de ~690 KB (BSS ~10 MB).
+- `sys_snowflame.c`: `Sys_*` (tempo pelo relógio do SnowBridge, `Sys_ListFiles` sobre o SnowFS + arquivos em RAM, `Sys_Sleep` por `BR_SLEEP_US`), **rede nula** (só loopback), **entrada** `IN_Frame` (teclado HID → teclas e `SE_CHAR`, mouse, botões do controle → `K_JOY*`/setas), **som** `SNDDMA_*` (o buffer DMA do Quake, 22 kHz estéreo, é separado em duas vozes mono da SnowPaula — esquerda e direita — por DMA para a ARAM; a posição de reprodução vem do relógio) e `main()` (linha de comando lida de `SRAM_BASE+0x200`).
+- `tr_stub.c`: renderer nulo que cumpre a `refexport_t` (o renderer real sobre o FlameCore é a Fase 4).
+- `apply_patches.sh`: ajustes mínimos e idempotentes no clone do ioq3 (macros `#ifndef` para `DEF_COMZONEMEGS`, `DEF_COMHUNKMEGS`, `MIN_COMHUNKMEGS`, `MAX_RAW_STREAMS`, `BASEGAME`), com os valores certos para 64 MB passados por `-D` em `modules.sh`. Compila-se com `-DSTANDALONE -DBASEGAME="baseoa"` (dados do OpenArena; sem a verificação de pak0 do Q3).
+- Hardware novo: `BR_SLEEP_US` (SnowBridge): a CPU espera N µs sem queimar instruções (usado por `Sys_Sleep`, `NET_Sleep` e pela espera do DVD); `Cpu::exc_vec/exc_pc` registram a última exceção.
+- `sf100_run` ganhou `--data caminho=arquivo` (SnowFS em memória), `--cmdline`, `--profile` (PCs mais quentes), `--watch-code lo:hi` (acha escrita no código); foi ele que achou um estouro de `malloc` em `SND_setup` (`com_soundMegs`).
+Resultado (pk3 sintético de `tools/mkpk3.py`, `port/ioq3/fixture/pak0.pk3`): o motor lista `baseoa/pak0.pk3` pelo SnowFS, abre o zip e descomprime (zlib) `default.cfg`, inicializa cliente, renderer e **som sobre a SnowPaula**, completa a inicialização e sai por `+quit` com código 0 (~0,9 G instruções, ~8 s simulados; a maior parte do tempo de CPU é `Huff_Init`). Teste (lento): `SF_PORT_SLOW=1`.
 
 ## Roteiro
 1. (feito) Runtime freestanding e hello world em ColdFire real.
 2. (feito) libc ampliada e compilação de todos os módulos do ioq3.
-3. Camada de plataforma (`sys_snowflame.c`, rede nula, `IN_*`, `SNDDMA_*`) e ligação do motor; módulos de jogo ligados estaticamente (sem `dlopen`) ou QVM da pk3.
+3. (feito) Camada de plataforma (`sys_snowflame.c`, rede nula, `IN_*`, `SNDDMA_*`) e ligação do motor rodando; os módulos de jogo serão QVM da pk3 (sem `dlopen`).
 4. Renderer próprio sobre o FlameCore (BSP + lightmaps em multitextura, shaders simples) e carga de `.pk3` do DVD (zip do SnowFS).
 5. Dados livres do OpenArena e menu/IPL para iniciar o jogo.

@@ -2,7 +2,7 @@
 	.section .text.start,"ax",@progbits
 	.globl	_start
 _start:
-	move.l	#0x00F00000,%sp		/* IPL_STACK */
+	move.l	#__stack_top,%sp		/* definido em link.ld (padrão IPL_STACK); programas grandes passam --defsym __stack_top */
 	lea	__bss_start,%a0
 	lea	_end,%a1
 1:	cmp.l	%a1,%a0

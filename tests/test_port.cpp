@@ -73,3 +73,23 @@ TEST(gcc_coldfire_libc_matches_host_and_reads_dvd_files) {
   CHECK(s.console.out == expect);
   if (s.console.out != expect) std::printf("--- obtido ---\n%s", s.console.out.c_str());
 }
+
+// O motor COMPLETO do ioquake3 (qcommon+server+botlib+client+zlib, renderer nulo) ligado para ColdFire sobe no emulador: lê o pk3 do SnowFS (zip + inflate),
+// executa default.cfg, inicializa cliente, renderer e som (SNDDMA sobre a SnowPaula) e encerra por "+quit". Lento (~2 min com cache de objetos): só com SF_PORT_SLOW=1.
+TEST(ioq3_engine_boots_from_pk3_on_dvd_initializes_client_and_sound_and_quits) {
+  if (!have_cross() || !have_ioq3() || !std::getenv("SF_PORT_SLOW")) { std::printf("    (ignorado: defina SF_PORT_SLOW=1 com toolchain e ioq3)\n"); return; }
+  const char* out = "/tmp/sf100_ioq3.bin";
+  CHECK_EQ(std::system(("IOQ3='" + ioq3_dir() + "' bash port/ioq3/build_ioq3.sh " + out + " >/dev/null 2>&1").c_str()), 0);
+  std::ifstream f(out, std::ios::binary); CHECK(f.good());
+  std::vector<u8> img((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  std::ifstream pk("port/ioq3/fixture/pak0.pk3", std::ios::binary); std::vector<u8> pak((std::istreambuf_iterator<char>(pk)), std::istreambuf_iterator<char>()); CHECK(!pak.empty());
+  std::vector<u8> disc; CHECK(sffs_build({{"baseoa/pak0.pk3", pak}}, disc));
+  Soc s; s.dvd.insert(disc); s.load(IPL_LOAD_ADDR, img); s.cpu.reset_regs(); s.cpu.a[7] = IPL_STACK; s.cpu.set_pc(IPL_LOAD_ADDR);
+  const char* cmd = "+set dedicated 1 +set com_hunkMegs 16 +set com_zoneMegs 12 +set com_soundMegs 2 +set fs_basepath . +quit";
+  s.bus.raw_write(SRAM_BASE + 0x200, cmd, (u32)std::strlen(cmd) + 1);
+  CHECK(s.run_until_halt(60ull * 1000000000000ull)); CHECK_EQ(s.cpu.d[0], 0u);
+  const std::string& o = s.console.out;
+  for (const char* want : {"baseoa/pak0.pk3 (2 files)", "execing default.cfg", "Sound initialization successful.", "--- Common Initialization Complete ---", "[ioq3] Sys_Quit"})
+    { CHECK(o.find(want) != std::string::npos); if (o.find(want) == std::string::npos) std::printf("    faltou: %s\n", want); }
+  CHECK(o.find("Sys_Error") == std::string::npos);
+}

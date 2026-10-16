@@ -20,6 +20,7 @@ class Cpu {
   u32 macsr = 0, mask = 0xFFFFu, cacr = 0;
   u32 other_sp = 0;          // SP inativo: USP em supervisor, SSP em usuário (troca ao mudar SR[S])
   bool halted = false, stopped = false; Reason reason = RUNNING;
+  int exc_vec = -1; u32 exc_pc = 0, exc_addr = 0;      // última exceção: vetor, PC da instrução e (erro de acesso) endereço da falha
   u64 cycles = 0, instrs = 0;
 
   void reset_regs();
