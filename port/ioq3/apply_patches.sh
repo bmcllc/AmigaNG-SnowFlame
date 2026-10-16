@@ -26,4 +26,9 @@ patch(code + "/qcommon/q_shared.h", [
 patch(code + "/client/snd_local.h", [
   ("#define MAX_RAW_STREAMS (MAX_CLIENTS * 2 + 1)", "#ifndef MAX_RAW_STREAMS\n#define MAX_RAW_STREAMS (MAX_CLIENTS * 2 + 1)\n#endif"),
 ])
+patch(code + "/qcommon/unzip.c", [
+  ('#include "unzip.h"', '#include "unzip.h"\n#ifdef SF100\n// zlib compilado com Z_SOLO exige zalloc/zfree do chamador\nstatic voidpf sf_zalloc(voidpf o, uInt n, uInt s) { (void)o; return calloc(n, s); }\nstatic void sf_zfree(voidpf o, voidpf p) { (void)o; free(p); }\n#define SF_ZALLOC ((alloc_func)sf_zalloc)\n#define SF_ZFREE ((free_func)sf_zfree)\n#else\n#define SF_ZALLOC ((alloc_func)0)\n#define SF_ZFREE ((free_func)0)\n#endif'),
+  ("stream.zalloc = (alloc_func)0;", "stream.zalloc = SF_ZALLOC;"),
+  ("stream.zfree = (free_func)0;", "stream.zfree = SF_ZFREE;"),
+])
 PY

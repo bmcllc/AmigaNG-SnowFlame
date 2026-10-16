@@ -69,6 +69,11 @@ void free(void *p) {
   ((struct blk *)p - 1)->used = 0;
   for (b = heap_head; b; b = b->next) while (!b->used && b->next && !b->next->used) { n = b->next; b->size += sizeof(struct blk) + n->size; b->next = n->next; }
 }
+/* diagnóstico: maior bloco livre e total livre / usado (sf_malloc_stats) */
+void sf_malloc_stats(size_t *largest, size_t *freeb, size_t *usedb) {
+  struct blk *b; *largest = *freeb = *usedb = 0;
+  for (b = heap_head; b; b = b->next) { if (b->used) *usedb += b->size; else { *freeb += b->size; if (b->size > *largest) *largest = b->size; } }
+}
 void *calloc(size_t n, size_t m) { size_t t = n * m; void *p = malloc(t); if (p) memset(p, 0, t); return p; }
 void *realloc(void *p, size_t n) {
   struct blk *b; void *q;

@@ -9,9 +9,13 @@ int sfr_frame_count;
 
 float SFR_Time(void) { static unsigned long long t0; extern unsigned long long sf_time_ns(void); unsigned long long n = sf_time_ns(); if (!t0) t0 = n; return (float)((n - t0) / 1000000ull) * 0.001f; }
 
+static void *raw_vbuf, *raw_cmdbuf;                                          /* alocados uma vez: o renderer é reiniciado a cada mapa (Shutdown + BeginRegistration) */
 void SFR_BackendInit(void) {
-  vbuf = malloc((size_t)SFR_MAX_VERTS * 48 + 16); cmdbuf = malloc(CMD_WORDS * 4 + 16); packets = malloc(sizeof(sfpacket_t) * SFR_MAX_PACKETS);
-  vbuf = (unsigned *)(((unsigned)vbuf + 15) & ~15u); cmdbuf = (unsigned *)(((unsigned)cmdbuf + 15) & ~15u);
+  if (!raw_vbuf) {
+    raw_vbuf = malloc((size_t)SFR_MAX_VERTS * 48 + 16); raw_cmdbuf = malloc(CMD_WORDS * 4 + 16); packets = malloc(sizeof(sfpacket_t) * SFR_MAX_PACKETS);
+    if (!raw_vbuf || !raw_cmdbuf || !packets) { extern void sf_malloc_stats(size_t *, size_t *, size_t *); size_t l, f, u; sf_malloc_stats(&l, &f, &u); ri.Error(ERR_FATAL, "SFR: sem memória para os buffers do backend (maior bloco livre %u KB, livre %u KB, usado %u KB)", (unsigned)(l >> 10), (unsigned)(f >> 10), (unsigned)(u >> 10)); }
+    vbuf = (unsigned *)(((unsigned)raw_vbuf + 15) & ~15u); cmdbuf = (unsigned *)(((unsigned)raw_cmdbuf + 15) & ~15u);
+  }
   nverts = npackets = 0; rt_cur = 0;
   VID_REG(0x00) = 2;                                                           /* VMODE_480P */
   VID_REG(0x40 + 0x00) = SFR_RT_ADDR0; VID_REG(0x40 + 0x04) = SFR_W * 4; VID_REG(0x40 + 0x1C) = 1;   /* camada 0: RT 0, habilitada */

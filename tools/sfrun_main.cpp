@@ -6,6 +6,7 @@
 #include "util.h"
 #include <cstdio>
 #include <cstdlib>
+#include "cfdis.h"
 #include <fstream>
 #include <map>
 #include <algorithm>
@@ -36,16 +37,35 @@ int main(int argc, char** argv) {
   s.console.on_char = [](char c) { std::putchar(c); };
   s.load(base, img); s.cpu.reset_regs(); s.cpu.a[7] = abi::IPL_STACK; s.cpu.set_pc(have_entry ? entry : base);
   if (video) { s.video.on_frame = [&](Video& v) { for (auto& sh : shots) if (sh.first == (int)v.frames) { write_png(sh.second, v.width(), v.height(), v.frame); std::printf("[sf100_run] quadro %u gravado em %s\n", v.frames, sh.second.c_str()); } }; s.video.start(); }
-  u32 ring[16] = {0}; int rn = 0; std::map<u32, u64> hist;
-  s.on_step = [&](u32 pc, int) { ring[rn++ & 15] = pc; if (prof) hist[pc >> 4]++; };
-  if (whi) s.bus.on_access = [&](u32 addr, int size, bool w) { if (w && addr >= wlo && addr < whi && !s.cpu.halted) { std::printf("[sf100_run] ESCRITA NO CÓDIGO: %08x (%d bytes) pelo pc=%08x; últimos PCs:", addr, size, ring[(rn - 1) & 15]); for (int i = 0; i < 16; i++) std::printf(" %x", ring[(rn + i) & 15]); std::printf("\n"); s.cpu.halted = true; } };
+  u32 ring[256] = {0}; int rn = 0; std::map<u32, u64> hist;
+  s.on_step = [&](u32 pc, int) {
+    ring[rn++ & 255] = pc; if (prof) hist[pc >> 4]++;
+    static const u32 brk = std::getenv("SF_BREAK") ? (u32)std::strtoul(std::getenv("SF_BREAK"), nullptr, 16) : 0;   // SF_BREAK=endereço_hex: mostra regs e pilha nas primeiras passagens
+    static u64 nstep; static bool corr; if (!corr && std::getenv("SF_GUARD") && (++nstep & 1023) == 0) {   // SF_GUARD=endereço: avisa quando a memória do código muda (DMA/escrita fora do on_access)
+      u32 g = (u32)std::strtoul(std::getenv("SF_GUARD"), nullptr, 16); for (int i = 0; i < 16; i++) if (s.bus.raw_r8(g + i) != img[g - base + i]) { corr = true; std::printf("[sf100_run] CÓDIGO ALTERADO em %08x (pc=%08x, instr=%llu); últimos PCs:", g + i, pc, (unsigned long long)s.cpu.instrs); for (int k = 0; k < 16; k++) std::printf(" %x", ring[(rn + 240 + k) & 255]); std::printf("\n"); break; }
+    }
+    static int tr = 0; if (tr > 0) { tr--; auto rd = [&](u32 a) -> u16 { u16 v = 0; s.bus.peek16(a, v); return v; }; CfInsn ci = cf_disasm(rd, pc); std::printf("  tr %06x %-28s d0=%x d1=%x a0=%x a6=%x a7=%x\n", pc, ci.text.c_str(), s.cpu.d[0], s.cpu.d[1], s.cpu.a[0], s.cpu.a[6], s.cpu.a[7]); }
+    if (brk && pc == brk && std::getenv("SF_TRACE")) tr = 60;
+    static int brk_n; if (brk && pc == brk && brk_n++ < 3) { std::printf("[sf100_run] SF_BREAK %08x: ", pc); for (int i = 0; i < 8; i++) std::printf("d%d=%x ", i, s.cpu.d[i]); for (int i = 0; i < 8; i++) std::printf("a%d=%x ", i, s.cpu.a[i]); std::printf("\n  pilha:"); for (int i = 0; i < 12; i++) std::printf(" %x", s.bus.raw_r32(s.cpu.a[7] + 4 * i)); std::printf("\n"); }
+    static bool bad; if (!bad && (s.cpu.exc_vec == 2 || s.cpu.exc_vec == 3 || (pc >= abi::DDR_SIZE && pc < 0x10000000u))) {   // salto para fora da RAM: mostra o contexto da primeira ocorrência (antes do loop de exceções)
+      bad = true; std::printf("[sf100_run] PRIMEIRA FALHA: pc=%08x vetor=%d endereço=%08x; últimos PCs:", pc, s.cpu.exc_vec, s.cpu.exc_addr); for (int i = 0; i < 16; i++) std::printf(" %x", ring[(rn + 240 + i) & 255]);
+      std::printf("\n[sf100_run] ring64:"); for (int i = 0; i < 64; i++) std::printf(" %x", ring[(rn + 192 + i) & 255]);
+      std::printf("\n[sf100_run] regs:"); for (int i = 0; i < 8; i++) std::printf(" d%d=%x", i, s.cpu.d[i]); for (int i = 0; i < 8; i++) std::printf(" a%d=%x", i, s.cpu.a[i]);
+      std::printf("\n[sf100_run] pilha:"); for (int i = 0; i < 16; i++) std::printf(" %x", s.bus.raw_r32(s.cpu.a[7] + 4 * i)); std::printf("\n");
+    }
+  };
+  if (whi) s.bus.on_access = [&](u32 addr, int size, bool w) { if (w && addr >= wlo && addr < whi && !s.cpu.halted) { std::printf("[sf100_run] ESCRITA NO CÓDIGO: %08x (%d bytes) pelo pc=%08x; últimos PCs:", addr, size, ring[(rn - 1) & 255]); for (int i = 0; i < 16; i++) std::printf(" %x", ring[(rn + 240 + i) & 255]); std::printf("\n"); s.cpu.halted = true; } };
   bool ok = s.run_until_halt((Ps)(secs * 1e12));
   s.bus.cache_flush_all(false); std::fflush(stdout);
   std::printf("[sf100_run] %s: pc=%08x d0=%d, %llu instruções, %.3f ms simulados, I-cache %llu/%llu\n", ok ? "HALT" : (s.cpu.halted ? "CPU parou (falha)" : "tempo esgotado"), s.cpu.pc, (int)s.cpu.d[0],
     (unsigned long long)s.cpu.instrs, s.sched.now / 1e9, (unsigned long long)s.bus.ihits, (unsigned long long)s.bus.imisses);
   if (prof) { std::vector<std::pair<u64, u32>> v; for (auto& kv : hist) v.push_back({kv.second, kv.first << 4}); std::sort(v.rbegin(), v.rend()); std::printf("[sf100_run] PCs mais quentes (blocos de 16 B):"); for (size_t i = 0; i < 12 && i < v.size(); i++) std::printf(" %x(%llu)", v[i].second, (unsigned long long)v[i].first); std::printf("\n"); }
-  if (!ok && s.cpu.halted) { std::printf("[sf100_run] últimos PCs:"); for (int i = 0; i < 16; i++) std::printf(" %x", ring[(rn + i) & 15]); std::printf("\n"); }
+  if (!ok && s.cpu.halted) { std::printf("[sf100_run] últimos PCs:"); for (int i = 0; i < 16; i++) std::printf(" %x", ring[(rn + 240 + i) & 255]); std::printf("\n"); }
   if (!ok && s.cpu.halted) { u32 a = s.cpu.exc_pc; std::printf("[sf100_run] memória em %08x:", a); for (int i = 0; i < 12; i++) std::printf(" %02x", s.bus.raw_r8(a + i)); std::printf("   imagem original:"); for (int i = 0; i < 12; i++) std::printf(" %02x", a - base + i < img.size() ? img[a - base + i] : 0); std::printf("\n"); }
+  if (!ok && s.cpu.halted) {   // registradores e topo da pilha: ajuda a achar quem chamou um endereço inválido (use com o .map do link)
+    std::printf("[sf100_run] regs:"); for (int i = 0; i < 8; i++) std::printf(" d%d=%x", i, s.cpu.d[i]); for (int i = 0; i < 8; i++) std::printf(" a%d=%x", i, s.cpu.a[i]); std::printf("\n[sf100_run] pilha:");
+    for (int i = 0; i < 24; i++) std::printf(" %x", s.bus.raw_r32(s.cpu.a[7] + 4 * i)); std::printf("\n");
+  }
   if (!ok && s.cpu.halted) std::printf("[sf100_run] motivo do halt: %d; última exceção: vetor %d em pc=%08x (endereço de falha %08x)\n", (int)s.cpu.reason, s.cpu.exc_vec, s.cpu.exc_pc, s.cpu.exc_addr);
   return ok ? (int)(s.cpu.d[0] & 0xFF) : 1;
 }
