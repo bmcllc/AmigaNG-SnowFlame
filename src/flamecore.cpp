@@ -147,7 +147,7 @@ FlameCore::Vtx FlameCore::load_vertex(u32 idx) {
   if (!p) { error = true; error_msg = "vértice fora da memória"; return v; }
   v.x = rbef(p); v.y = rbef(p + 4); v.z = rbef(p + 8); v.rhw = rbef(p + 12);
   v.r = rbef(p + 16); v.g = rbef(p + 20); v.b = rbef(p + 24); v.a = rbef(p + 28);
-  v.u = rbef(p + 32); v.v = rbef(p + 36); v.fog = rbef(p + 40);
+  v.u = rbef(p + 32); v.v = rbef(p + 36); v.fog = rbef(p + 40); v.u1 = v.fog; v.v1 = rbef(p + 44);
   return v;
 }
 
@@ -291,9 +291,10 @@ u32 FlameCore::shade(const Tri& t, float l0, float l1, float l2) {
   auto I = [&](float a, float b, float c) { return p0 * a + p1 * b + p2 * c; };
   float col[4] = {I(t.v[0].r, t.v[1].r, t.v[2].r), I(t.v[0].g, t.v[1].g, t.v[2].g), I(t.v[0].b, t.v[1].b, t.v[2].b), I(t.v[0].a, t.v[1].a, t.v[2].a)};
   float u = I(t.v[0].u, t.v[1].u, t.v[2].u), v = I(t.v[0].v, t.v[1].v, t.v[2].v), fogc = I(t.v[0].fog, t.v[1].fog, t.v[2].fog);
+  float u1 = I(t.v[0].u1, t.v[1].u1, t.v[2].u1), v1 = I(t.v[0].v1, t.v[1].v1, t.v[2].v1);
   for (int unit = 0; unit < 2; unit++) {
     if (!(s.flags & (unit ? ST_TEX1 : ST_TEX0))) continue;
-    float tx[4]; sample(s, unit, u, v, t.lod[unit], tx);
+    float tx[4]; if (unit == 1 && (s.flags & ST_UV1)) sample(s, unit, u1, v1, t.lod[unit], tx); else sample(s, unit, u, v, t.lod[unit], tx);
     switch (s.texenv[unit]) {
       case TE_REPLACE: for (int i = 0; i < 4; i++) col[i] = tx[i]; break;
       case TE_DECAL: for (int i = 0; i < 3; i++) col[i] = tx[i] * tx[3] + col[i] * (1 - tx[3]); break;
@@ -301,7 +302,7 @@ u32 FlameCore::shade(const Tri& t, float l0, float l1, float l2) {
       default: for (int i = 0; i < 4; i++) col[i] *= tx[i]; break;
     }
   }
-  if (s.flags & ST_FOG) {
+  if ((s.flags & ST_FOG) && !(s.flags & ST_UV1)) {
     float den = s.fog_end - s.fog_start; float f = den != 0 ? clampf((fogc - s.fog_start) / den, 0, 1) : 1.0f;
     float fc[3] = {((s.fog_color >> 16) & 255) / 255.0f, ((s.fog_color >> 8) & 255) / 255.0f, (s.fog_color & 255) / 255.0f};
     for (int i = 0; i < 3; i++) col[i] = col[i] * (1 - f) + fc[i] * f;
@@ -323,7 +324,7 @@ static u32 blend_px(u32 s, u32 d, u32 sf, u32 df) {
 
 bool FlameCore::eligible(const Tri& t) const {
   const RState& s = states[t.state]; u32 f = s.flags, df = (f >> ST_DEPTH_FUNC_SHIFT) & 7;
-  return (f & ST_DEPTH_TEST) && (f & ST_DEPTH_WRITE) && !(f & ST_BLEND) && !(f & ST_STENCIL) && (df == 0 || df == 1);
+  return (f & ST_DEPTH_TEST) && (f & ST_DEPTH_WRITE) && !(f & ST_BLEND) && !(f & ST_STENCIL) && !(f & ST_ATEST) && (df == 0 || df == 1);
 }
 
 static void stencil_op(u8& sv, u32 op, u32 ref) {
@@ -344,8 +345,9 @@ void FlameCore::imm_tri(const Tri& t, int) {
     }
     bool dp = !(f & ST_DEPTH_TEST) || dfunc(df, z, tz[i]);
     if (!dp) { if (f & ST_STENCIL) stencil_op(tst[i], s.zfail, s.sref); continue; }
-    if (f & ST_STENCIL) stencil_op(tst[i], s.zpass, s.sref);
     u32 src = shade(t, l0, l1, l2); st.pix_shaded++;
+    if ((f & ST_ATEST) && (src >> 24) < 128) continue;                      // alpha test: descartado antes de Z/stencil/cor
+    if (f & ST_STENCIL) stencil_op(tst[i], s.zpass, s.sref);
     if ((f & ST_DEPTH_TEST) && (f & ST_DEPTH_WRITE)) tz[i] = z;
     tcol[i] = (f & ST_BLEND) ? blend_px(src, tcol[i], s.bsrc, s.bdst) : src;
   }

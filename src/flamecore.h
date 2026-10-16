@@ -21,7 +21,7 @@ class FlameCore : public Device {
   u32 read(u32 off) override;
   void write(u32 off, u32 v) override;
 
-  struct Vtx { float x, y, z, rhw, r, g, b, a, u, v, fog; };
+  struct Vtx { float x, y, z, rhw, r, g, b, a, u, v, fog, u1, v1; };
 
  private:
   struct Tex { bool valid = false; const u8* ptr = nullptr; u32 addr = 0; int lw = 0, lh = 0, fmt = 0, flags = 0, nlevels = 1; u32 off[16] = {0}; };

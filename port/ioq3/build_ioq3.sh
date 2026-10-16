@@ -15,7 +15,10 @@ for f in "${SERVER[@]}"; do build "" server "$CODE/$f"; done
 for f in "${BOTLIB[@]}"; do build "" botlib "$CODE/$f"; done
 for f in "${CLIENT[@]}"; do build "" client "$CODE/$f"; done
 for f in "${ZLIB[@]}"; do build "-DZ_SOLO" zlib "$CODE/$f"; done
-for f in "$H/ioq3/sys_snowflame.c" "$H/ioq3/tr_stub.c"; do build "" plat "$f"; done
+build "" plat "$H/ioq3/sys_snowflame.c"
+for f in "${SFR[@]}"; do build "" sfr "$H/ioq3/$f"; done                          # renderer sobre o FlameCore
+for f in "${RCOMMON[@]}"; do build "" rcommon "$CODE/$f"; done                    # carregadores de imagem e fontes do ioq3
+for j in "${JPEG[@]}"; do build "-w" jpeg "$CODE/thirdparty/jpeg-9f/$j.c"; done  # libjpeg (só decodificação)
 for f in "$H/rt/crt0.S" "$H/rt/libc.c" "$H/rt/libc2.c" "$H/rt/setjmp.S" "$H/rt/libm.c" "$H/rt/libgcc.c"; do build "" rt "$f"; done
 $CC "${CFLAGS_COMMON[@]}" -nostdlib -nostartfiles -nodefaultlibs -static -Wl,--no-warn-rwx-segments -Wl,--build-id=none -Wl,--defsym,__stack_top=0x03F00000 -Wl,-Map,"${OUT%.bin}.map" -T "$H/rt/link.ld" -o "${OUT%.bin}.elf" "${objs[@]}" || exit 1
 ${OBJCOPY:-m68k-linux-gnu-objcopy} -O binary "${OUT%.bin}.elf" "$OUT"

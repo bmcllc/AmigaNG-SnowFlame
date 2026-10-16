@@ -36,9 +36,21 @@ Para isso o runtime ganhou (`port/rt/`): `libc2.c` (ctype, errno, strings extras
 - `sf100_run` ganhou `--data caminho=arquivo` (SnowFS em memória), `--cmdline`, `--profile` (PCs mais quentes), `--watch-code lo:hi` (acha escrita no código); foi ele que achou um estouro de `malloc` em `SND_setup` (`com_soundMegs`).
 Resultado (pk3 sintético de `tools/mkpk3.py`, `port/ioq3/fixture/pak0.pk3`): o motor lista `baseoa/pak0.pk3` pelo SnowFS, abre o zip e descomprime (zlib) `default.cfg`, inicializa cliente, renderer e **som sobre a SnowPaula**, completa a inicialização e sai por `+quit` com código 0 (~0,9 G instruções, ~8 s simulados; a maior parte do tempo de CPU é `Huff_Init`). Teste (lento): `SF_PORT_SLOW=1`.
 
+## Fase 4: renderer do ioq3 sobre o FlameCore (`port/ioq3/sfr/`)
+O renderer "SnowFlame" implementa a `refexport_t` inteira. A CPU (FPU do ColdFire) projeta e **recorta** (near/frustum) os triângulos, acumula-os já em espaço de tela no formato de vértice de 48 bytes do GPU e monta **uma lista de comandos por quadro**
+(o FlameCore é por tiles: precisa ver o quadro todo). Buffer duplo de 640×480 na VRAM; `EndFrame` envia a lista, espera o GPU e troca a camada de vídeo 0.
+- `sfr_image.c`: TGA/JPG/PNG/BMP/PCX (carregadores do renderercommon do ioq3 + libjpeg só de decodificação), redimensiona para potência de 2 (máx. 256), converte para RGB565/ARGB4444 com mipmaps na VRAM; lightmaps do BSP com x2 de "overbright".
+- `sfr_shader.c`: scripts `.shader` do Q3 (map/clampMap/animMap, blendFunc, alphaFunc, rgbGen, alphaGen, tcMod scroll/scale/rotate, tcGen environment, cull, sort, surfaceparm, skyparms); shaders sem script ganham estágio padrão (lightmap+difuso, dinâmico, vértice, 2D).
+- `sfr_world.c`: BSP v46 — planares, triangle soup, **patches de Bézier** (tesselados), lightmaps, **PVS por cluster**, culling por frustum em nós/folhas/superfícies, modelos inline (`*N`), tokens de entidade, `inPVS`.
+- `sfr_model.c`: MD3 (frames com interpolação, tags, `LerpTag`, skins por superfície, iluminação por vértice simples). `sfr_scene.c`: entidades, sprites, vigas/relâmpagos, polígonos, ordenação por `sort`.
+- Para suportar o Q3 foram **acrescentados dois recursos ao GPU** (`docs/SF100-ABI.md`): `ST_UV1` (a unidade de textura 1 lê um segundo par de UV do vértice: lightmap com UV próprio em multitextura) e `ST_ATEST` (alpha test: cercas, grades, folhagem).
+- Harness sem motor: `port/ioq3/rtest.c` (`build_rtest.sh`) implementa `refimport_t` sobre stdio/SnowFS; dados sintéticos de `tools/mkmap.py` em `port/ioq3/fixture/renderdata` (BSP com lightmaps, patch, soup colorida, cerca com alpha test, shader aditivo rotativo, textura JPG, MD3 e HUD). Teste com CRC dos quadros (`SF_PORT_SLOW=1`).
+- Correção importante: `endian.h` do runtime não definia `__FLOAT_WORD_ORDER`, e o ioq3 compilava em modo little-endian num CPU big-endian; agora o motor usa `Q3_BIG_ENDIAN` (e troca os bytes dos arquivos de dados, que são little-endian).
+Ainda não implementado: skybox, névoa (fog), sombras, marcas de impacto (`MarkFragments`), DrawStretchRaw (cinemáticas), `deformVertexes`/`turb`, luz dinâmica e lightgrid (modelos usam um sombreamento por normal fixo).
+
 ## Roteiro
 1. (feito) Runtime freestanding e hello world em ColdFire real.
 2. (feito) libc ampliada e compilação de todos os módulos do ioq3.
 3. (feito) Camada de plataforma (`sys_snowflame.c`, rede nula, `IN_*`, `SNDDMA_*`) e ligação do motor rodando; os módulos de jogo serão QVM da pk3 (sem `dlopen`).
-4. Renderer próprio sobre o FlameCore (BSP + lightmaps em multitextura, shaders simples) e carga de `.pk3` do DVD (zip do SnowFS).
+4. (feito, com dados sintéticos) Renderer próprio sobre o FlameCore (BSP + lightmaps em multitextura, shaders, MD3, 2D). Falta validar com um mapa e dados reais do OpenArena.
 5. Dados livres do OpenArena e menu/IPL para iniciar o jogo.

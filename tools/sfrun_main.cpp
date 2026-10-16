@@ -1,8 +1,9 @@
 // sf100_run: carrega uma imagem plana (ex.: gerada por port/build.sh) em 0x1000 e a executa até HALT; imprime o console e o código de saída (D0).
-//   sf100_run prog.bin [--base 0x1000] [--entry A] [--time segundos] [--dvd imagem.dvd] [--data caminho=arquivo]... [--cmdline "texto"]
+//   sf100_run prog.bin [--video] [--shot N:arquivo.png] [--base 0x1000] [--entry A] [--time segundos] [--dvd imagem.dvd] [--data caminho=arquivo]... [--cmdline "texto"]
 //   --data monta um SnowFS em memória (vira o DVD); --cmdline grava um texto NUL-terminado em SRAM_BASE+0x200 (o ioq3 o usa como linha de comando).
 #include "soc.h"
 #include "sffs.h"
+#include "util.h"
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -12,13 +13,15 @@
 using namespace sf;
 
 int main(int argc, char** argv) {
-  std::string in, dvd, cmdline; u32 wlo = 0, whi = 0; bool prof = false; std::vector<std::pair<std::string, std::string>> data; u32 base = abi::IPL_LOAD_ADDR, entry = 0; double secs = 20; bool have_entry = false;
+  std::string in, dvd, cmdline; bool video = false; std::vector<std::pair<int, std::string>> shots; u32 wlo = 0, whi = 0; bool prof = false; std::vector<std::pair<std::string, std::string>> data; u32 base = abi::IPL_LOAD_ADDR, entry = 0; double secs = 20; bool have_entry = false;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i]; auto nx = [&]() -> std::string { if (i + 1 >= argc) { std::fprintf(stderr, "faltou argumento de %s\n", a.c_str()); std::exit(2); } return argv[++i]; };
     if (a == "--base") base = (u32)std::strtoul(nx().c_str(), nullptr, 0); else if (a == "--entry") { entry = (u32)std::strtoul(nx().c_str(), nullptr, 0); have_entry = true; }
     else if (a == "--time") secs = std::atof(nx().c_str());
     else if (a == "--watch-code") { std::string v = nx(); size_t c = v.find(':'); wlo = (u32)std::strtoul(v.substr(0, c).c_str(), nullptr, 0); whi = (u32)std::strtoul(v.substr(c + 1).c_str(), nullptr, 0); }
     else if (a == "--profile") prof = true;
+    else if (a == "--video") video = true;
+    else if (a == "--shot") { std::string v = nx(); size_t c = v.find(':'); shots.push_back({std::atoi(v.substr(0, c).c_str()), v.substr(c + 1)}); video = true; }
     else if (a == "--dvd") dvd = nx(); else if (a == "--cmdline") cmdline = nx();
     else if (a == "--data") { std::string v = nx(); size_t e = v.find('='); if (e == std::string::npos) { std::fprintf(stderr, "esperava caminho=arquivo\n"); return 2; } data.push_back({v.substr(0, e), v.substr(e + 1)}); }
     else in = a;
@@ -32,6 +35,7 @@ int main(int argc, char** argv) {
   if (!cmdline.empty()) { std::vector<u8> c(cmdline.begin(), cmdline.end()); c.push_back(0); s.bus.raw_write(abi::SRAM_BASE + 0x200, c.data(), (u32)c.size()); }
   s.console.on_char = [](char c) { std::putchar(c); };
   s.load(base, img); s.cpu.reset_regs(); s.cpu.a[7] = abi::IPL_STACK; s.cpu.set_pc(have_entry ? entry : base);
+  if (video) { s.video.on_frame = [&](Video& v) { for (auto& sh : shots) if (sh.first == (int)v.frames) { write_png(sh.second, v.width(), v.height(), v.frame); std::printf("[sf100_run] quadro %u gravado em %s\n", v.frames, sh.second.c_str()); } }; s.video.start(); }
   u32 ring[16] = {0}; int rn = 0; std::map<u32, u64> hist;
   s.on_step = [&](u32 pc, int) { ring[rn++ & 15] = pc; if (prof) hist[pc >> 4]++; };
   if (whi) s.bus.on_access = [&](u32 addr, int size, bool w) { if (w && addr >= wlo && addr < whi && !s.cpu.halted) { std::printf("[sf100_run] ESCRITA NO CÓDIGO: %08x (%d bytes) pelo pc=%08x; últimos PCs:", addr, size, ring[(rn - 1) & 15]); for (int i = 0; i < 16; i++) std::printf(" %x", ring[(rn + i) & 15]); std::printf("\n"); s.cpu.halted = true; } };

@@ -95,6 +95,10 @@ O host injeta eventos com `Soc::hid.key_event/mouse_move/mouse_button/mouse_whee
 
 `MMU_CTRL` bit 1 = supervisor sem tradução (kernel não precisa de páginas mapeadas); com a MMU ligada, a CPU restaura os registradores ao tomar erro de acesso, tornando a instrução reiniciável.
 
+`ST_ATEST` (GPU): descarta pixels com alfa < 128 depois do sombreamento (antes de Z/cor), para cercas, grades e folhagem sem ordenação.
+
+`ST_UV1` (GPU): a unidade de textura 1 lê o **segundo par de UV** do vértice (os campos `fog` e `pad`, bytes 40..47), com mapeamento independente do difuso — é o que permite lightmaps com UV próprio em multitextura; o fog fica indisponível nesse modo.
+
 ## Software de sistema e ferramentas (neste repositório)
 - **snowcc** (`docs/SNOWCC.md`): compilador de um subconjunto de C para o ColdFire; **SnowOS Native** + SnowGX/SnowVX/SnowAudio (`os/`, `docs/SNOWOS.md`); **SnowOS Classic**: Cpu68k + chipset Amiga + tradutor 68k -> ColdFire.
 - Depurador (`sfdbg`), profiler (`sfprof`), desassembador (`src/cfdis.h`): `docs/TOOLS.md`.

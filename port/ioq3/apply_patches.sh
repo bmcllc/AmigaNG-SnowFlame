@@ -16,6 +16,10 @@ patch(code + "/qcommon/common.c", [
   ("#define MIN_COMHUNKMEGS		DEF_COMHUNKMEGS", "#ifndef MIN_COMHUNKMEGS\n#define MIN_COMHUNKMEGS		DEF_COMHUNKMEGS\n#endif"),
   ("#define DEF_COMZONEMEGS		48", "#ifndef DEF_COMZONEMEGS\n#define DEF_COMZONEMEGS		48\n#endif"),
 ])
+patch(code + "/qcommon/msg.c", [
+  ("void MSG_initHuffman( void ) {\n	int i,j;", "#ifdef SF100\n// SF-100: a árvore inicial de Huffman usa as frequências divididas por 64 (mesmo resultado estrutural, ~64x menos instruções no boot);\n// cliente e servidor rodam no mesmo binário, então a codificação continua consistente.\n#define HUFF_N(v) (((v) + 63) >> 6)\n#else\n#define HUFF_N(v) (v)\n#endif\nvoid MSG_initHuffman( void ) {\n	int i,j;"),
+  ("for (j=0;j<msg_hData[i];j++) {", "for (j=0;j<HUFF_N(msg_hData[i]);j++) {"),
+])
 patch(code + "/qcommon/q_shared.h", [
   ('  #define BASEGAME					"foobar"', '  #ifndef BASEGAME\n  #define BASEGAME					"foobar"\n  #endif'),
 ])

@@ -2,7 +2,7 @@
 #include "texutil.h"
 
 using Vtx = FlameCore::Vtx;
-static Vtx V(float x, float y, float r, float g, float b, float z = 0.5f, float a = 1, float rhw = 1, float u = 0, float v = 0, float fog = 0) { return Vtx{x, y, z, rhw, r, g, b, a, u, v, fog}; }
+static Vtx V(float x, float y, float r, float g, float b, float z = 0.5f, float a = 1, float rhw = 1, float u = 0, float v = 0, float fog = 0) { return Vtx{x, y, z, rhw, r, g, b, a, u, v, fog, 0, 0}; }
 
 struct GL {
   std::vector<u32> w;
@@ -424,4 +424,43 @@ TEST(gpu_etc1_roundtrip_and_known_block) {
   std::vector<u32> grad(64 * 64); for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++) grad[y * 64 + x] = pack_argb(255, x * 4, y * 4, 128 + ((x ^ y) & 15) * 3);
   GT g; auto gb = build_texture(grad, 64, 64, TF_ETC1, false); CHECK_EQ(gb.size(), 16 * 16 * 8); render_tex(g, gb, 64, 64, TF_ETC1);
   CHECK(psnr_vs(g, grad, 64, 64) > 30.0);
+}
+
+// ST_UV1: a unidade 1 usa o segundo par de UV do vértice (campos fog/pad) -> lightmap com mapeamento próprio, independente do UV do difuso.
+TEST(gpu_second_uv_set_drives_texture_unit_1) {
+  GT t; GL g;
+  // unidade 0: vermelho sólido 2x2 (ARGB8888); unidade 1: 2x1, texel esquerdo preto e direito branco, em RGB565
+  for (int i = 0; i < 4; i++) t.s.bus.raw_w32(TEXB + i * 4, 0xFFFF0000u);
+  t.s.bus.raw_w16(TEXB + 0x100, 0x0000); t.s.bus.raw_w16(TEXB + 0x102, 0xFFFF);
+  auto quad = [&](float u1a, float u1b) {
+    float V[6][12] = {};                                       // dois triângulos cobrindo (8,8)-(56,56); u0=v0=0.25 em todos; u1 varia de u1a a u1b em x
+    float px[6][2] = {{8, 8}, {56, 8}, {56, 56}, {8, 8}, {56, 56}, {8, 56}};
+    for (int i = 0; i < 6; i++) { float fx = (px[i][0] - 8) / 48.0f; V[i][0] = px[i][0]; V[i][1] = px[i][1]; V[i][2] = 0.5f; V[i][3] = 1; V[i][4] = V[i][5] = V[i][6] = V[i][7] = 1; V[i][8] = 0.25f; V[i][9] = 0.25f; V[i][10] = u1a + (u1b - u1a) * fx; V[i][11] = 0.5f; }
+    for (int i = 0; i < 6; i++) for (int k = 0; k < 12; k++) wbef(t.s.bus.raw(VB + i * 48 + 4 * k, 4), V[i][k]);
+  };
+  quad(0.0f, 1.0f);
+  g.rt().clear(0xFF000040).vbase(VB).tex(0, TEXB, 1, 1, TF_ARGB8888, TFLAG_CLAMP).tex(1, TEXB + 0x100, 1, 0, TF_RGB565, TFLAG_CLAMP)
+   .add(GC_TEXENV, {0, TE_MODULATE}).add(GC_TEXENV, {1, TE_MODULATE}).state(ST_TEX0 | ST_TEX1 | ST_UV1).arrays(0, 6).end();
+  t.exec(g); CHECK(!t.s.gpu.error);
+  CHECK_EQ(t.px(12, 32), 0xFF000000u);                          // metade esquerda: preto do lightmap x vermelho
+  CHECK_EQ(t.px(52, 32), 0xFFFF0000u);                          // metade direita: branco x vermelho
+  // sem ST_UV1 a unidade 1 usa u0=0.25 (texel preto) no quadro inteiro
+  GL g2; g2.rt().clear(0xFF000040).vbase(VB).tex(0, TEXB, 1, 1, TF_ARGB8888, TFLAG_CLAMP).tex(1, TEXB + 0x100, 1, 0, TF_RGB565, TFLAG_CLAMP)
+   .add(GC_TEXENV, {0, TE_MODULATE}).add(GC_TEXENV, {1, TE_MODULATE}).state(ST_TEX0 | ST_TEX1).arrays(0, 6).end();
+  t.exec(g2); CHECK_EQ(t.px(52, 32), 0xFF000000u);
+}
+
+// ST_ATEST: texels com alfa < 128 são descartados (sem cor nem Z): o que estiver atrás aparece pelo "buraco" (cercas, folhas).
+TEST(gpu_alpha_test_discards_transparent_texels_without_writing_depth) {
+  GT t; GL g;
+  // textura 2x1 ARGB8888: texel esquerdo opaco verde, direito transparente
+  t.s.bus.raw_w32(TEXB, 0xFF00FF00u); t.s.bus.raw_w32(TEXB + 4, 0x0000FF00u);
+  std::vector<Vtx> back = {V(0, 0, 1, 0, 0, 0.9f), V(64, 0, 1, 0, 0, 0.9f), V(64, 64, 1, 0, 0, 0.9f), V(0, 0, 1, 0, 0, 0.9f), V(64, 64, 1, 0, 0, 0.9f), V(0, 64, 1, 0, 0, 0.9f)};
+  std::vector<Vtx> fence = {V(0, 0, 1, 1, 1, 0.5f, 1, 1, 0, 0), V(64, 0, 1, 1, 1, 0.5f, 1, 1, 1, 0), V(64, 64, 1, 1, 1, 0.5f, 1, 1, 1, 1), V(0, 0, 1, 1, 1, 0.5f, 1, 1, 0, 0), V(64, 64, 1, 1, 1, 0.5f, 1, 1, 1, 1), V(0, 64, 1, 1, 1, 0.5f, 1, 1, 0, 1)};
+  t.verts(back, VB); t.verts(fence, VB + 6 * 48);
+  g.rt().clear(0xFF000040).vbase(VB).state(ST_OPAQUE_DEPTH).arrays(0, 6)
+   .tex(0, TEXB, 1, 0, TF_ARGB8888, TFLAG_CLAMP).add(GC_TEXENV, {0, TE_REPLACE}).state(ST_OPAQUE_DEPTH | ST_TEX0 | ST_ATEST).arrays(6, 6).end();
+  t.exec(g); CHECK(!t.s.gpu.error);
+  CHECK_EQ(t.px(16, 32), 0xFF00FF00u);                          // parte opaca da "cerca" (mais perto)
+  CHECK_EQ(t.px(48, 32), 0xFFFF0000u);                          // parte transparente: aparece o fundo vermelho
 }

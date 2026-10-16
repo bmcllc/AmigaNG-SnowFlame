@@ -109,6 +109,8 @@ enum : u32 {
 enum : u32 { ST_DEPTH_TEST = 1u << 0, ST_DEPTH_WRITE = 1u << 1, ST_BLEND = 1u << 2,
              ST_CULL_CW = 1u << 3, ST_CULL_CCW = 1u << 4, ST_FOG = 1u << 5, ST_TEX0 = 1u << 6,
              ST_TEX1 = 1u << 7, ST_STENCIL = 1u << 8, ST_BILINEAR = 1u << 9,
+             ST_ATEST = 1u << 11 /*alpha test: descarta o pixel se alfa < 128 (não escreve cor, Z nem stencil de zpass)*/,
+             ST_UV1 = 1u << 10 /*TEX1 lê o 2º par de UV do vértice (campos fog e pad = u1,v1); o fog fica indisponível: lightmaps com UV próprio*/,
              ST_DEPTH_FUNC_SHIFT = 12 /*3 bits: 0 LESS,1 LEQUAL,2 GREATER,3 GEQUAL,4 EQUAL,5 NOTEQUAL,6 ALWAYS,7 NEVER*/ };
 enum : u32 { CLR_COLOR = 1, CLR_DEPTH = 2 };
 enum : u32 { BF_ZERO = 0, BF_ONE, BF_SRC_ALPHA, BF_INV_SRC_ALPHA, BF_DST_ALPHA, BF_INV_DST_ALPHA };
