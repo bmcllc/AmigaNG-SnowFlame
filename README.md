@@ -8,6 +8,7 @@ SnowOS Classic (CPU 68000 + chipset Amiga OCS/ECS/AGA + tradutor 68k → ColdFir
     make test     # ~170 testes (hardware, ISA, texturas, chipset, compilador, SnowOS, Classic, tradutor)
     make demo     # roda a demo; escreve out/frame_*.ppm e out/audio.wav
     make boot     # monta o DVD do sistema e liga o SF-100 no SnowFlame Dashboard (PNGs em out/boot/)
+    make play     # o mesmo numa janela, com controle, teclado e som (opcional: precisa de SDL2)
     ./build/sf100_demo out 60
 
     ./build/snowcc app.c -I os -I os/include --run         # compila e executa um programa C (ex.: apps do SnowOS)

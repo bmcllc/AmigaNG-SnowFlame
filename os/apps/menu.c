@@ -361,6 +361,21 @@ static void floor_grid(void) {                                  /* grade em pers
   }
 }
 static int pill_y(int i) { return 98 + i * 64; }
+/* halo aditivo sem textura (segmento UI_ADD): leque de 16 setores com anel no meio raio, queda ~ (1 - r)^2;
+   cor por vértice é bem mais barata no FlameCore que um quad grande com filtro bilinear */
+static unsigned premul(unsigned rgb, int a) { return 0xFF000000u | (((rgb >> 16 & 255) * a / 255) << 16) | (((rgb >> 8 & 255) * a / 255) << 8) | ((rgb & 255) * a / 255); }
+static void glow(int cx, int cy, int rx, int ry, unsigned rgb, int a) {
+  unsigned c0 = premul(rgb, imin(a, 255)), c1 = premul(rgb, imin(a, 255) / 4), c2 = 0xFF000000u; int k;
+  if (vn + 16 * 9 > MAXV) return;
+  for (k = 0; k < 16; k++) {
+    int ca = bcos(k * 64), sa = bsin(k * 64), cb = bcos(k * 64 + 64), sb = bsin(k * 64 + 64);
+    int mxa = cx * 4 + (rx * 2 * ca >> 16), mya = cy * 4 + (ry * 2 * sa >> 16), mxb = cx * 4 + (rx * 2 * cb >> 16), myb = cy * 4 + (ry * 2 * sb >> 16);
+    int oxa = cx * 4 + (rx * 4 * ca >> 16), oya = cy * 4 + (ry * 4 * sa >> 16), oxb = cx * 4 + (rx * 4 * cb >> 16), oyb = cy * 4 + (ry * 4 * sb >> 16);
+    vtx(cx * 4, cy * 4, 0, c0, 0, 0); vtx(mxa, mya, 0, c1, 0, 0); vtx(mxb, myb, 0, c1, 0, 0);
+    vtx(mxa, mya, 0, c1, 0, 0); vtx(oxa, oya, 0, c2, 0, 0); vtx(oxb, oyb, 0, c2, 0, 0);
+    vtx(mxa, mya, 0, c1, 0, 0); vtx(oxb, oyb, 0, c2, 0, 0); vtx(mxb, myb, 0, c1, 0, 0);
+  }
+}
 static void bar(int x, int y, int w, int pct, unsigned c0, unsigned c1) {
   int f = w * imin(pct, 100) / 100;
   quadc(x * 4, y * 4, (x + w) * 4, (y + 8) * 4, 0x40203860u);
@@ -430,10 +445,9 @@ static void render(unsigned rt) {
   ui_begin();
   ui_seg(UI_ALPHA); floor_grid();
   /* halo atrás do emblema (gelo + brasa) */
-  ui_seg_texadd(A_UIT + UI_TEX_GLOW, 6, 6, TF_ARGB8888);
+  ui_seg(UI_ADD);
   { int r = emb_s * 260 >> 16, r2 = emb_s * 130 >> 16, g = state == ST_BOOT ? imin(255, boot_t * 3) : 255;
-    quad4((emb_x - r) * 4, (emb_y - r) * 4, (emb_x + r) * 4, (emb_y + r) * 4, with_alpha(0x2060C0, g * 120 >> 8), with_alpha(0x2060C0, g * 120 >> 8), with_alpha(0x2060C0, g * 120 >> 8), with_alpha(0x2060C0, g * 120 >> 8), 0, 0, 1024, 1024);
-    quad4((emb_x - r2) * 4, (emb_y - r2) * 4, (emb_x + r2) * 4, (emb_y + r2) * 4, with_alpha(0xFF7020, g * 110 >> 8), with_alpha(0xFF7020, g * 110 >> 8), with_alpha(0xFF7020, g * 110 >> 8), with_alpha(0xFF7020, g * 110 >> 8), 0, 0, 1024, 1024); }
+    glow(emb_x, emb_y, r, r, 0x2060C0, g * 120 >> 8); glow(emb_x, emb_y, r2, r2, 0xFF7020, g * 110 >> 8); }
   /* saídas das VPUs */
   ui_ext(A_POUT, 0, NSNOW * 6, ST_BLEND | ST_TEX0 | ST_BILINEAR, BF_SRC_ALPHA, BF_ONE, A_UIT + UI_TEX_FLAKE, 6, 6, TF_ARGB8888);
   ui_ext(A_VOUT, out_ring1, part_count[2] * 2, ST_DEPTH_TEST | ST_DEPTH_WRITE, BF_ONE, BF_ZERO, 0, 0, 0, 0);
@@ -455,10 +469,9 @@ static void render(unsigned rt) {
   /* cápsulas "gel" do menu */
   if (mf > 0) {
     int ofs = (256 - mf) * 300 / 256 + pf * 340 / 256;
-    ui_seg_texadd(A_UIT + UI_TEX_GLOW, 6, 6, TF_ARGB8888);
+    ui_seg(UI_ADD);
     { int y = pill_y(sel), x0 = 382 + ofs - sel_f, g = (200 + (bsin(tick * 6) >> 11)) * mf >> 8;   /* aura pulsante da seleção */
-      quad4((x0 - 70) * 4, (y - 44) * 4, (x0 + 306) * 4, (y + 100) * 4, with_alpha(0xFF6A1A, g), with_alpha(0xFF6A1A, g), with_alpha(0xFF6A1A, g), with_alpha(0xFF6A1A, g), 0, 0, 1024, 1024);
-      quad4((x0 - 70) * 4, (y - 44) * 4, (x0 + 306) * 4, (y + 100) * 4, with_alpha(0xFF6A1A, g), with_alpha(0xFF6A1A, g), with_alpha(0xFF6A1A, g), with_alpha(0xFF6A1A, g), 0, 0, 1024, 1024); }
+      glow(x0 + 118, y + 28, 188, 72, 0xFF6A1A, g * 2); }
     ui_seg_tex(A_UIT + UI_TEX_PILL, 8, 6, TF_ARGB8888);
     for (i = 0; i < N_ITEMS; i++) {
       int y = pill_y(i), x0 = 382 + ofs - (i == sel ? sel_f : 0), x1 = x0 + 236, a = mf * (i == sel ? 255 : 210) >> 8;
