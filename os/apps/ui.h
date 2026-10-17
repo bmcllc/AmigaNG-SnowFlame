@@ -86,7 +86,7 @@ static void quad4(int x0, int y0, int x1, int y1, unsigned c00, unsigned c10, un
   vtx(x0, y0, 0, c00, u0, v0); vtx(x1, y1, 0, c11, u1, v1); vtx(x0, y1, 0, c01, u0, v1);
 }
 static void quadc(int x0, int y0, int x1, int y1, unsigned c) { quad4(x0, y0, x1, y1, c, c, c, c, 0, 0, 0, 0); }
-static unsigned with_alpha(unsigned argb, int a) { return ((unsigned)a << 24) | (argb & 0xFFFFFF); }
+static unsigned with_alpha(unsigned argb, int a) { if (a > 255) a = 255; if (a < 0) a = 0; return ((unsigned)a << 24) | (argb & 0xFFFFFF); }
 static unsigned mix(unsigned c0, unsigned c1, int t) {   /* t 0..256 */
   unsigned r = 0; int sh;
   for (sh = 0; sh < 32; sh += 8) r |= (unsigned)((((c0 >> sh) & 255) * (256 - t) + ((c1 >> sh) & 255) * t) >> 8) << sh;
@@ -116,37 +116,55 @@ static int mc_do(unsigned cmd, unsigned sector, unsigned count, unsigned addr) {
   return (st & 4) ? -1 : 0;
 }
 
-/* ------------------------------ segmentos de vértices: cada um com seu estado (opaco, alfa, aditivo, texturizado) ------------------------------ */
+/* ------------------------------ segmentos de vértices: cada um com seu estado (opaco, alfa, aditivo, texturizado) ------------------------------
+ * UI_EXT intercala vértices de outro buffer (ex.: saída das SnowVector) com estado próprio do FlameCore, na ordem de chamada. */
 #define UI_OPAQUE 0
 #define UI_ALPHA 1
 #define UI_ADD 2
 #define UI_TEX 3
-#define MAXSEG 24
-static int seg_first[MAXSEG], seg_kind[MAXSEG], seg_lw[MAXSEG], seg_lh[MAXSEG], seg_fmt[MAXSEG], nseg;
-static unsigned seg_addr[MAXSEG];
+#define UI_TEXADD 4
+#define UI_EXT 5
+#define MAXSEG 48
+static int seg_first[MAXSEG], seg_count[MAXSEG], seg_kind[MAXSEG], seg_lw[MAXSEG], seg_lh[MAXSEG], seg_fmt[MAXSEG], nseg;
+static unsigned seg_addr[MAXSEG], seg_vb[MAXSEG], seg_state[MAXSEG], seg_bs[MAXSEG], seg_bd[MAXSEG];
+static void ui_close(void) { if (seg_kind[nseg] != UI_EXT) seg_count[nseg] = vn - seg_first[nseg]; }
 static void ui_begin(void) { vn = 0; nseg = 0; seg_first[0] = 0; seg_kind[0] = UI_OPAQUE; }
 static void ui_seg(int kind) {
-  if (nseg > 0 && seg_first[nseg] == vn) nseg--;                  /* descarta segmento vazio */
+  ui_close();
+  if (nseg > 0 && seg_kind[nseg] != UI_EXT && seg_count[nseg] == 0) nseg--;      /* descarta segmento vazio */
   if (nseg < MAXSEG - 1) nseg++;
   seg_first[nseg] = vn; seg_kind[nseg] = kind;
 }
 static void ui_seg_tex(unsigned addr, int lw, int lh, int fmt) { ui_seg(UI_TEX); seg_addr[nseg] = addr; seg_lw[nseg] = lw; seg_lh[nseg] = lh; seg_fmt[nseg] = fmt; }
+static void ui_seg_texadd(unsigned addr, int lw, int lh, int fmt) { ui_seg(UI_TEXADD); seg_addr[nseg] = addr; seg_lw[nseg] = lw; seg_lh[nseg] = lh; seg_fmt[nseg] = fmt; }
+/* desenho externo: 'count' vértices a partir de 'first' no buffer 'vb'; tex = 0 sem textura */
+static void ui_ext(unsigned vb, int first, int count, unsigned state, unsigned bs, unsigned bd, unsigned tex, int lw, int lh, int fmt) {
+  ui_seg(UI_EXT);
+  seg_vb[nseg] = vb; seg_first[nseg] = first; seg_count[nseg] = count; seg_state[nseg] = state; seg_bs[nseg] = bs; seg_bd[nseg] = bd;
+  seg_addr[nseg] = tex; seg_lw[nseg] = lw; seg_lh[nseg] = lh; seg_fmt[nseg] = fmt;
+  ui_seg(UI_ALPHA);
+}
 static void ui_end(unsigned rt, unsigned clear_argb) {
-  GxList l; int i;
-  nseg++;
+  GxList l; int i; unsigned cur_vb = 0;
+  ui_close(); nseg++;
   os_cache_flush(A_VB, (unsigned)vn * 48);
-  gx_begin(&l, CMD, 2048);
+  gx_begin(&l, CMD, 4096);
   gx_set_rt(&l, rt, SW * 4, SW, SH);
   gx_clear(&l, clear_argb, 0x3F800000, CLR_COLOR | CLR_DEPTH);
-  gx_vertex_base(&l, A_VB);
   for (i = 0; i < nseg; i++) {
-    int first = seg_first[i], count = (i + 1 < nseg ? seg_first[i + 1] : vn) - first, kind = seg_kind[i];
+    int first = seg_first[i], count = seg_count[i], kind = seg_kind[i]; unsigned vb = kind == UI_EXT ? seg_vb[i] : A_VB;
     if (count <= 0) continue;
+    if (vb != cur_vb) { gx_vertex_base(&l, vb); cur_vb = vb; }
+    /* o alfa do alvo acumula cobertura ("sobre") e brilhos aditivos não o alteram: o alvo sai pré-multiplicado (camada LF_PREMUL) */
     if (kind == UI_OPAQUE) gx_state(&l, 0);
-    else if (kind == UI_ADD) { gx_blend(&l, BF_ONE, BF_ONE); gx_state(&l, ST_BLEND); }
-    else if (kind == UI_ALPHA) { gx_blend(&l, BF_SRC_ALPHA, BF_INV_SRC_ALPHA); gx_state(&l, ST_BLEND); }
-    else {
-      gx_blend(&l, BF_SRC_ALPHA, BF_INV_SRC_ALPHA);
+    else if (kind == UI_ADD) { gx_blend_sep(&l, BF_ONE, BF_ONE, BF_ZERO, BF_ONE); gx_state(&l, ST_BLEND); }
+    else if (kind == UI_ALPHA) { gx_blend_sep(&l, BF_SRC_ALPHA, BF_INV_SRC_ALPHA, BF_ONE, BF_INV_SRC_ALPHA); gx_state(&l, ST_BLEND); }
+    else if (kind == UI_EXT) {
+      if (seg_bd[i] == BF_ONE) gx_blend_sep(&l, seg_bs[i], seg_bd[i], BF_ZERO, BF_ONE); else gx_blend_sep(&l, seg_bs[i], seg_bd[i], BF_ONE, BF_INV_SRC_ALPHA);
+      if (seg_addr[i]) { gx_set_tex(&l, 0, seg_addr[i], seg_lw[i], seg_lh[i], seg_fmt[i], TFLAG_CLAMP, 1); gx_texenv(&l, 0, TE_MODULATE); }
+      gx_state(&l, seg_state[i]);
+    } else {
+      if (kind == UI_TEXADD) gx_blend_sep(&l, BF_SRC_ALPHA, BF_ONE, BF_ZERO, BF_ONE); else gx_blend_sep(&l, BF_SRC_ALPHA, BF_INV_SRC_ALPHA, BF_ONE, BF_INV_SRC_ALPHA);
       gx_set_tex(&l, 0, seg_addr[i], seg_lw[i], seg_lh[i], seg_fmt[i], TFLAG_CLAMP, 1); gx_texenv(&l, 0, TE_MODULATE);
       gx_state(&l, ST_BLEND | ST_TEX0 | ST_BILINEAR);
     }

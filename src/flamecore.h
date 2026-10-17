@@ -26,7 +26,7 @@ class FlameCore : public Device {
  private:
   struct Tex { bool valid = false; const u8* ptr = nullptr; u32 addr = 0; int lw = 0, lh = 0, fmt = 0, flags = 0, nlevels = 1; u32 off[16] = {0}; };
   struct RState {
-    u32 flags = 0; u32 bsrc = abi::BF_ONE, bdst = abi::BF_ZERO; u32 fog_color = 0; float fog_start = 0, fog_end = 1;
+    u32 flags = 0; u32 bsrc = abi::BF_ONE, bdst = abi::BF_ZERO, basrc = abi::BF_ONE, badst = abi::BF_ZERO; u32 fog_color = 0; float fog_start = 0, fog_end = 1;
     u32 sfunc = 6, sref = 0, smask = 0xFF, sfail = 0, zfail = 0, zpass = 0;
     Tex tex[2]; u32 texenv[2] = {0, 0}; float uvscale[2] = {1, 1}; u32 pal[2][256] = {{0}};   // paletas (CI4/CI8) por unidade
   };

@@ -34,6 +34,19 @@ Vpu::Result Vpu::run_now(u32 pc, const u32 sregs[8]) {
   const u32 nwords = VPU_IMEM_SIZE / 4;
   const u64 WATCHDOG = 4000000;
   auto fault = [&](u32 at) { r.fault = true; r.pc = at; };
+  // DMA local: copia funcional no instante da instrução; o término (em ciclos do job) vem do árbitro de memória.
+  const Ps t0 = bus.sched ? bus.sched->now : 0;
+  Ps dma_end = t0; u64 dma_done = 0;
+  auto dma = [&](u32 dm, u32 ext, u32 len, bool in) -> bool {
+    if ((dm | ext | len) & 3 || (u64)dm + len > VPU_DMEM_SIZE) return false;
+    u8* p = bus.raw(ext, len); if (len && !p) return false;
+    if (in) std::memcpy(dmem + dm, p, len); else if (len) std::memcpy(p, dmem + dm, len);
+    Ps start = std::max(t0 + cyc2ps(r.cycles + VPU_DMA_SETUP, VPU_HZ), dma_end);
+    dma_end = bus.reserve(ext, len, start);
+    dma_done = (u64)(((__uint128_t)(dma_end - t0) * VPU_HZ + 999999999999ull) / 1000000000000ull);
+    r.dma_bytes += len; r.dma_xfers++;
+    return true;
+  };
   while (true) {
     if (pc >= nwords) { fault(pc); break; }
     if (r.cycles >= WATCHDOG) { fault(pc); break; }
@@ -44,7 +57,7 @@ Vpu::Result Vpu::run_now(u32 pc, const u32 sregs[8]) {
     r.cycles++;
     float vb[4];
     switch (op) {
-      case vop::HALT: return r;
+      case vop::HALT: r.cycles = std::max(r.cycles, dma_done); return r;     // o job só termina com o DMA concluído
       case vop::NOP: break;
       case vop::VADD: case vop::VSUB: case vop::VMUL: case vop::VMAC: case vop::VMIN: case vop::VMAX: {
         swz4(v[c], swz, vb); float* d = v[a]; const float* x = v[b]; float t[4];
@@ -66,13 +79,14 @@ Vpu::Result Vpu::run_now(u32 pc, const u32 sregs[8]) {
         if (op == vop::VDOT4) { d += x[3] * vb[3]; r.flops += 7; } else r.flops += 5;
         for (int i = 0; i < 4; i++) v[a][i] = d; break;
       }
-      case vop::VMOV: case vop::VRCP: case vop::VRSQ: case vop::VABS: {
+      case vop::VMOV: case vop::VRCP: case vop::VRSQ: case vop::VABS: case vop::VFRC: {
         swz4(v[c], swz, vb); float t[4];
         for (int i = 0; i < 4; i++) {
           switch (op) {
             case vop::VMOV: t[i] = vb[i]; break;
             case vop::VRCP: t[i] = 1.0f / vb[i]; break;
             case vop::VRSQ: t[i] = 1.0f / std::sqrt(vb[i]); break;
+            case vop::VFRC: t[i] = vb[i] - std::floor(vb[i]); break;
             default:        t[i] = std::fabs(vb[i]); break;
           }
         }
@@ -85,6 +99,10 @@ Vpu::Result Vpu::run_now(u32 pc, const u32 sregs[8]) {
         else for (int i = 0; i < 4; i++) wbef(dmem + addr + 4 * i, v[a][i]);
         break;
       }
+      case vop::DMAIN:  if (!dma(s[a & 7], s[b & 7], s[c & 7], true)) { fault(cur); return r; } break;
+      case vop::DMAOUT: if (!dma(s[b & 7], s[a & 7], s[c & 7], false)) { fault(cur); return r; } break;
+      case vop::DMAWAIT: r.cycles = std::max(r.cycles, dma_done); break;
+      case vop::SIGNAL: r.sigs.push_back({r.cycles, a & 15}); break;
       case vop::SETA: s[a & 7] = (u32)imm; break;
       case vop::SADD: s[a & 7] = s[b & 7] + (u32)imm; break;
       case vop::SCMP: lt = (i32)s[a & 7] < (i32)s[b & 7]; eq = s[a & 7] == s[b & 7]; break;
@@ -112,8 +130,13 @@ void Vpu::kick() {
   running = true;
   Result r = run_now(j.pc, j.s);
   last_cycles = r.cycles; last_flops = r.flops; total_cycles += r.cycles; total_flops += r.flops;
+  dma_bytes += r.dma_bytes; dma_xfers += r.dma_xfers;
   if (r.fault) { faulted = true; fault_pc = r.pc; }
   u64 g = gen; bool irq = j.irq;
+  for (auto& sg : r.sigs) {
+    u32 n = sg.second;
+    bus.sched->at(cyc2ps(sg.first, VPU_HZ), [this, g, n]() { if (g != gen) return; bus.sem[n] += 1; signals++; });
+  }
   bus.sched->at(cyc2ps(std::max<u64>(r.cycles, 1), VPU_HZ), [this, g, irq]() {
     if (g != gen) return;       // job cancelado por RESET
     jobs_done++; running = false;
@@ -130,6 +153,8 @@ u32 Vpu::read(u32 off) {
     case VPU_FLOPS: return (u32)last_flops;
     case VPU_FAULTPC: return fault_pc;
     case VPU_TOTAL_CYCLES: return (u32)total_cycles;
+    case VPU_DMA_BYTES: return (u32)dma_bytes;
+    case VPU_JOBS_DONE: return (u32)jobs_done;
   }
   if (off >= VPU_S0 && off < VPU_S0 + 32) return next_s[(off - VPU_S0) / 4];
   return 0;
@@ -147,7 +172,8 @@ void Vpu::write(u32 off, u32 val) {
 // ---------------- Assembler / Disassembler ----------------
 namespace {
 struct Mn { const char* name; u32 op; int kind; };
-// kind: 0 sem args, 1 vd,va,vb[.swz], 2 vd,vb[.swz], 3 vd,[s+imm], 4 [s+imm],vs, 5 sd,imm, 6 sd,ss,imm, 7 sa,sb, 8 label
+// kind: 0 sem args, 1 vd,va,vb[.swz], 2 vd,vb[.swz], 3 vd,[s+imm], 4 [s+imm],vs, 5 sd,imm, 6 sd,ss,imm, 7 sa,sb, 8 label,
+//       9 sa,sb,sc (DMA), 10 n (semáforo 0..15)
 const Mn mnemonics[] = {
   {"HALT", vop::HALT, 0}, {"NOP", vop::NOP, 0},
   {"VADD", vop::VADD, 1}, {"VSUB", vop::VSUB, 1}, {"VMUL", vop::VMUL, 1}, {"VMAC", vop::VMAC, 1},
@@ -155,6 +181,7 @@ const Mn mnemonics[] = {
   {"VMOV", vop::VMOV, 2}, {"VRCP", vop::VRCP, 2}, {"VRSQ", vop::VRSQ, 2}, {"VABS", vop::VABS, 2},
   {"VLD", vop::VLD, 3}, {"VST", vop::VST, 4}, {"SETA", vop::SETA, 5}, {"SADD", vop::SADD, 6},
   {"SCMP", vop::SCMP, 7}, {"BRLT", vop::BRLT, 8}, {"BRNE", vop::BRNE, 8}, {"BRA", vop::BRA, 8},
+  {"VFRC", vop::VFRC, 2}, {"DMAIN", vop::DMAIN, 9}, {"DMAOUT", vop::DMAOUT, 9}, {"DMAWAIT", vop::DMAWAIT, 0}, {"SIGNAL", vop::SIGNAL, 10},
 };
 std::string trim(const std::string& s) {
   size_t a = s.find_first_not_of(" \t\r"), b = s.find_last_not_of(" \t\r");
@@ -258,6 +285,11 @@ bool vpu_assemble(const std::string& src, std::vector<u32>& out, std::string& er
               w = vpu_enc_i(m->op, a, b, imm); break;
       case 7: if (!need(2) || !parse_reg(L.args[0], 's', 8, a, nullptr) || !parse_reg(L.args[1], 's', 8, b, nullptr)) return E(L, "esperado sa, sb");
               w = vpu_enc_i(m->op, a, b, 0); break;
+      case 9: if (!need(3) || !parse_reg(L.args[0], 's', 8, a, nullptr) || !parse_reg(L.args[1], 's', 8, b, nullptr) || !parse_reg(L.args[2], 's', 8, c, nullptr))
+                return E(L, "esperado sDst, sSrc, sLen");
+              w = vpu_enc_r(m->op, a, b, c, 0); break;
+      case 10: if (!need(1) || !parse_int(L.args[0], imm) || imm < 0 || imm > 15) return E(L, "esperado semáforo 0..15");
+              w = vpu_enc_r(m->op, (u32)imm, 0, 0, 0); break;
       case 8: { if (!need(1)) return E(L, "esperado rótulo");
               auto it = labels.find(L.args[0]); if (it == labels.end()) return E(L, "rótulo indefinido " + L.args[0]);
               imm = (i32)it->second - (i32)(idx + 1);
@@ -283,6 +315,8 @@ std::string vpu_disasm(u32 w) {
     case 6: o << " s" << (a & 7) << ", s" << (b & 7) << ", " << imm; break;
     case 7: o << " s" << (a & 7) << ", s" << (b & 7); break;
     case 8: o << " " << imm << "(rel)"; break;
+    case 9: o << " s" << (a & 7) << ", s" << (b & 7) << ", s" << (c & 7); break;
+    case 10: o << " " << (a & 15); break;
   }
   return o.str();
 }

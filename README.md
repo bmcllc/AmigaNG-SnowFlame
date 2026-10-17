@@ -7,6 +7,7 @@ SnowOS Classic (CPU 68000 + chipset Amiga OCS/ECS/AGA + tradutor 68k → ColdFir
     make          # biblioteca, testes, demo e ferramentas em build/
     make test     # ~170 testes (hardware, ISA, texturas, chipset, compilador, SnowOS, Classic, tradutor)
     make demo     # roda a demo; escreve out/frame_*.ppm e out/audio.wav
+    make boot     # monta o DVD do sistema e liga o SF-100 no SnowFlame Dashboard (PNGs em out/boot/)
     ./build/sf100_demo out 60
 
     ./build/snowcc app.c -I os -I os/include --run         # compila e executa um programa C (ex.: apps do SnowOS)
@@ -16,4 +17,7 @@ SnowOS Classic (CPU 68000 + chipset Amiga OCS/ECS/AGA + tradutor 68k → ColdFir
     ./build/sfclassic prog68k.bin --frames 5 --out frames/  # SnowOS Classic: roda 68000 + chipset Amiga
 
 Layout: `src/` (emulador, compilador, ferramentas em biblioteca), `os/` (SnowOS Native em C), `tools/` (programas de linha de comando), `demo/`, `tests/`.
-Documentação: `docs/SF100-ABI.md` (hardware), `docs/SNOWCC.md`, `docs/SNOWOS.md`, `docs/TOOLS.md`.
+O **SnowFlame Dashboard** (`os/apps/menu.c`) é a vitrine da arquitetura: a CPU só cuida da lógica e publica jobs; a SnowVector A transforma o emblema 3D e a B simula
+neve e brasas na própria DMEM (DMA local + semáforos), o FlameCore rasteriza, o Blitter compõe o HUD, o Copper pinta o céu linha a linha e a SnowPaula toca o pad pelo sequenciador.
+
+Documentação: `docs/SF100-ABI.md` (hardware), `docs/SNOWCC.md`, `docs/SNOWOS.md`, `docs/MENU.md` (IPL e Dashboard), `docs/TOOLS.md`.

@@ -35,7 +35,8 @@ void Soc::quiesce() {
   timers.write(TMR_CTRL, 0); timers.write(0x10 + TMR_CTRL, 0);
   hid.write(HID_CTRL, 0); pads.write(PAD_CTRL, 0); dvd.write(DVD_CTRL, 0); dvd.write(DVD_STATUS, 6); mcard.write(MC_CTRL, 0); mcard.write(MC_STATUS, 6);
   video.write(VID_CTRL, 0); for (int i = 0; i < VID_LAYERS; i++) video.write(VID_LAYER0 + (u32)i * VID_LAYER_STRIDE + LR_FLAGS, 0);
-  cop.write(COP_CTRL, 0);
+  cop.write(COP_CTRL, 0); video.write(VID_BG, 0);
+  vpuA.write(VPU_CTRL, VPUC_RESET); vpuB.write(VPU_CTRL, VPUC_RESET); for (auto& x : bus.sem) x = 0;   // jobs e SIGNALs pendentes não atravessam o boot
   paula.write(PA_SEQ_CTRL, 0); for (int v = 0; v < PAULA_VOICES; v++) paula.write(PA_VOICE0 + (u32)v * 0x40 + PV_CTRL, 0); for (int c = 0; c < 4; c++) paula.write(PA_LEG0 + (u32)c * 0x10 + 12, 0);
   paula.write(PA_MASTER, 256); paula.write(PA_REVERB_WET, 0);
 }

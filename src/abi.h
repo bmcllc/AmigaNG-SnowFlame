@@ -81,7 +81,13 @@ enum : u32 {
   VPU_S0 = 0x20,     // 8 registradores escalares iniciais do próximo job (s0..s7)
   VPU_FAULTPC = 0x40,
   VPU_TOTAL_CYCLES = 0x44,
+  VPU_DMA_BYTES = 0x48,    // RO: bytes movidos pelo DMA local da unidade (acumulado)
+  VPU_JOBS_DONE = 0x4C,    // RO: jobs concluídos (acumulado)
 };
+// DMA local da VPU (instruções DMAIN/DMAOUT): endereços de 4 B, DMEM [0, 64 KiB), lado do barramento em DDR/VRAM/ARAM/SRAM/janelas;
+// passa pelo árbitro de memória (Bus::reserve) e NÃO enxerga a D-cache da CPU. Custo: 16 ciclos de preparo + banda da região.
+// SIGNAL n faz V() no semáforo n do SnowBridge no instante em que a instrução executa (encadeia VPU -> CPU/outra VPU sem IRQ).
+constexpr u32 VPU_DMA_SETUP = 16;
 enum : u32 { VPUC_START = 1, VPUC_RESET = 2, VPUC_IRQ = 4 };
 enum : u32 { VPUS_BUSY = 1, VPUS_DONE = 2, VPUS_FAULT = 4 };
 constexpr int VPU_QUEUE_DEPTH = 8;
@@ -101,7 +107,7 @@ constexpr int TILE = 32;
 enum : u32 {
   GC_END = 0x00, GC_SET_RT = 0x01 /*addr,pitch,w|h<<16*/, GC_CLEAR = 0x02 /*argb,depth(f32),flags*/,
   GC_VERTEX_BASE = 0x03 /*addr*/, GC_SET_TEX = 0x04 /*unit,addr,log2w|log2h<<8|fmt<<16|flags<<24, nlevels*/,
-  GC_STATE = 0x05 /*flags*/, GC_BLEND = 0x06 /*src,dst*/, GC_FOG = 0x07 /*argb,start,end*/,
+  GC_STATE = 0x05 /*flags*/, GC_BLEND = 0x06 /*src,dst[,src_alfa,dst_alfa]*/, GC_FOG = 0x07 /*argb,start,end*/,
   GC_STENCIL = 0x08 /*func,ref,mask,sfail,zfail,zpass*/, GC_TEXENV = 0x09 /*unit,mode*/,
   GC_SCISSOR = 0x0A /*x,y,w,h*/, GC_SET_PALETTE = 0x0B /*unit,addr,count(<=256): copia entradas ARGB8888 da memória*/, GC_DRAW_INDEXED = 0x10 /*idxaddr,count,prim*/,
   GC_DRAW_ARRAYS = 0x11 /*first,count,prim*/, GC_FLUSH = 0x1E /*renderiza o que foi acumulado*/,
@@ -163,7 +169,8 @@ enum : u32 {
 constexpr int VID_LAYERS = 4;
 enum : u32 { VID_ORDER = 0x24, VID_LAYER0 = 0x40, VID_LAYER_STRIDE = 0x40 };
 enum : u32 { LR_ADDR = 0x00, LR_PITCH = 0x04, LR_SCX = 0x08, LR_SCY = 0x0C, LR_ALPHA = 0x10, LR_WINX = 0x14, LR_WINY = 0x18, LR_FLAGS = 0x1C, LR_SIZE = 0x20 };
-enum : u32 { LF_ENABLE = 1, LF_INDEXED = 2, LF_WRAP = 4, LF_ADD = 8 /*mistura aditiva*/ };
+enum : u32 { LF_ENABLE = 1, LF_INDEXED = 2, LF_WRAP = 4, LF_ADD = 8 /*mistura aditiva*/,
+             LF_PREMUL = 16 /*pixels com alfa pré-multiplicado: saída = cor*ALPHA + fundo*(1 - a); para alvos do FlameCore limpos com alfa 0*/ };
 enum : u32 { VCTRL_P0 = 1, VCTRL_P1 = 2, VCTRL_VBLIRQ = 4, VCTRL_P0_IDX = 8, VCTRL_P1_IDX = 16 };
 enum : u32 { VMODE_240P = 0, VMODE_480I = 1, VMODE_480P = 2, VMODE_720P = 3 };
 

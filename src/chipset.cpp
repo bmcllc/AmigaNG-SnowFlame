@@ -171,7 +171,7 @@ void Video::write(u32 off, u32 v) {
     switch ((off - VID_LAYER0) % VID_LAYER_STRIDE) {
       case LR_ADDR: l.addr = v; break; case LR_PITCH: l.pitch = v; break; case LR_SCX: l.scx = (i32)v; break; case LR_SCY: l.scy = (i32)v; break;
       case LR_ALPHA: l.alpha = std::min<u32>(v, 255); break; case LR_WINX: l.winx = v; break; case LR_WINY: l.winy = v; break;
-      case LR_FLAGS: l.flags = v & 15; break; case LR_SIZE: l.size = v; break;
+      case LR_FLAGS: l.flags = v & 31; break; case LR_SIZE: l.size = v; break;
     }
     return;
   }
@@ -201,7 +201,7 @@ void Video::compose() {
     cop.run_line(y);                                   // efeitos por scanline: Copper altera registradores do vídeo
     if (interlaced && (y & 1) != field) continue;
     // Linha de cada camada (ponteiro para o início da linha do mapa, já com scroll vertical aplicado)
-    struct Row { const u8* p; int w, bpp; bool idx, wrap, add; i32 scx; u32 alpha; int x0, x1; } rows[VID_LAYERS]; int nrows = 0;
+    struct Row { const u8* p; int w, bpp; bool idx, wrap, add, pre; i32 scx; u32 alpha; int x0, x1; } rows[VID_LAYERS]; int nrows = 0;
     for (int k = 0; k < VID_LAYERS; k++) {
       int i = (order >> (4 * k)) & 15; if (i >= VID_LAYERS || !enabled(i)) continue;
       const Layer& l = layer[i]; bool idx = indexed(i), wrap = l.flags & LF_WRAP; int bpp = idx ? 1 : 4;
@@ -211,7 +211,7 @@ void Video::compose() {
       if (wrap) { sy %= h; if (sy < 0) sy += h; } else if (sy < 0 || sy >= h) continue;
       u32 ra = l.addr + (u32)sy * l.pitch; if (!bus.raw_ok(ra, (u32)w * bpp)) continue;
       int x0 = l.winx & 0xFFFF, x1 = l.winx >> 16; if (!x1) { x0 = 0; x1 = W; }
-      rows[nrows++] = Row{bus.raw(ra, (u32)w * bpp), w, bpp, idx, wrap, (bool)(l.flags & LF_ADD), l.scx, l.alpha, x0, std::min(x1, W)};
+      rows[nrows++] = Row{bus.raw(ra, (u32)w * bpp), w, bpp, idx, wrap, (bool)(l.flags & LF_ADD), (bool)(l.flags & LF_PREMUL), l.scx, l.alpha, x0, std::min(x1, W)};
     }
     for (int x = 0; x < W; x++) {
       u32 c = bg & 0xFFFFFF;
@@ -219,7 +219,13 @@ void Video::compose() {
         const Row& r = rows[k]; if (x < r.x0 || x >= r.x1) continue;
         i64 sx = (i64)x + r.scx;
         if (r.wrap) { sx %= r.w; if (sx < 0) sx += r.w; } else if (sx < 0 || sx >= r.w) continue;
-        u32 s = r.idx ? palette[r.p[sx]] : rbe32(r.p + sx * 4), a = (s >> 24) * r.alpha / 255; if (!a) continue;
+        u32 s = r.idx ? palette[r.p[sx]] : rbe32(r.p + sx * 4), a = (s >> 24) * r.alpha / 255;
+        if (r.pre && !r.add) {                                                  // pré-multiplicado: brilhos aditivos (alfa 0) também aparecem
+          if (!(s & 0xFFFFFF) && !a) continue;
+          u32 o = 0; for (int sh = 0; sh < 24; sh += 8) o |= std::min<u32>(255, ((((s >> sh) & 255) * r.alpha + 127) / 255) + ((((c >> sh) & 255) * (255 - a) + 127) / 255)) << sh;
+          c = o; continue;
+        }
+        if (!a) continue;
         if (r.add) {
           u32 o = 0; for (int sh = 0; sh < 24; sh += 8) o |= std::min<u32>(255, ((c >> sh) & 255) + ((((s >> sh) & 255) * a + 127) / 255)) << sh;
           c = o; continue;

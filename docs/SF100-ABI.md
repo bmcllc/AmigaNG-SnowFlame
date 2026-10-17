@@ -46,12 +46,19 @@ RTE (frame ColdFire), STOP, MOVEC (VBR 0x801, OTHER_A7 0x800, CACR 0x002), IRQ a
 ## SnowVector-128 (2 unidades, 150 MHz)
 SIMD FP32×4, 32 registradores vetoriais, 8 escalares, IMEM 8 KB, DMEM 64 KB. Palavra de 32 bits:
 `op[31:26] a[25:21] b[20:16] c[15:11] low[10:0]` (tipo I: imm16 em [15:0]); swizzle de 8 bits no operando b.
-Opcodes: HALT VADD VSUB VMUL VMAC VDOT3 VMIN VMAX VLD VST SETA SADD SCMP BRLT BRNE BRA VMOV VRCP VRSQ VABS VDOT4 NOP.
+Opcodes: HALT VADD VSUB VMUL VMAC VDOT3 VMIN VMAX VLD VST SETA SADD SCMP BRLT BRNE BRA VMOV VRCP VRSQ VABS VDOT4 NOP VFRC DMAIN DMAOUT DMAWAIT SIGNAL.
 Fila de 8 jobs, watchdog de 4M ciclos, falta em VLD/VST desalinhado ou fora da DMEM. Pico 8 FLOP/ciclo (1,2 GFLOPS/unidade).
+- **DMA local** (a VPU busca e entrega dados sem a CPU): `DMAIN sDmem, sEnd, sLen` (barramento → DMEM), `DMAOUT sEnd, sDmem, sLen` (DMEM → barramento), `DMAWAIT`.
+  Endereços e tamanho múltiplos de 4; lado externo em DDR/VRAM/ARAM/SRAM/janelas; a cópia é funcional na instrução e o término vem do árbitro de memória
+  (16 ciclos de preparo + banda da região, transferências em série). `HALT` só conclui o job depois do DMA pendente. **Não enxerga a D-cache da CPU**
+  (flush antes de DMAIN de dados escritos pela CPU). Falta (`VPUS_FAULT`) fora da DMEM, desalinhado ou endereço externo inválido.
+- **`SIGNAL n`** faz V() no semáforo n (0..15) do SnowBridge no instante da instrução: encadeia VPU → CPU sem IRQ (a CPU faz P lendo `BR_SEM0+4n`).
+- **`VFRC vd, vb`**: parte fracionária por via (x − floor(x)).
+- Registradores extras: `VPU_DMA_BYTES` (0x48, acumulado) e `VPU_JOBS_DONE` (0x4C).
 Montador/desmontador de texto: `vpu_assemble`, `vpu_disasm`.
 
 ## FlameCore (GPU de tiles, 200 MHz)
-Lista de comandos: palavra 0 = `(opcode<<24)|nparams`, seguida de nparams palavras (ver `GC_*`). Vértice pós-transformação de
+Lista de comandos: palavra 0 = `(opcode<<24)|nparams`, seguida de nparams palavras (ver `GC_*`). `GC_BLEND` aceita 2 parâmetros (os mesmos fatores para cor e alfa) ou 4 (`src, dst, src_alfa, dst_alfa`): com `ONE, INV_SRC_ALPHA` no alfa e um alvo limpo com alfa 0, o resultado sai pré-multiplicado para uma camada `LF_PREMUL`. Vértice pós-transformação de
 48 bytes (pos x,y,z,1/w; cor r,g,b,a; tex u,v,fog). Binning por tile 32×32, funções de aresta 28.4 com regra top-left,
 interpolação com correção de perspectiva, HSR (sombreamento adiado — saída idêntica ao modo imediato), Z, stencil, blend,
 fog, scissor, 2 TMUs, mipmaps, bilinear, clamp/repeat. Formatos: ARGB8888, RGB565, ARGB4444, DXT1, DXT3, DXT5, RGBA5551, L8, A8, LA88, CI4/CI8 (paleta da unidade via `GC_SET_PALETTE unit,addr,count`), VQ (livro de 256 blocos 2x2 RGB565 de 2048 B por mip + 1 índice por bloco) e ETC1 (Khronos, 4 bpp).
@@ -65,7 +72,7 @@ não são escritos.
   Mistura alfa na ordem da lista, recorte nas bordas; custo 8 ciclos/sprite + 3 ciclos/pixel visível.
 - Copper: `END/WAIT/MOVE/JUMP/SKIP/IRQ` por scanline (`cop_wait`, `cop_move`, `cop_skip(y)` = pula a próxima instrução se linha >= y, `cop_irq()` = IRQ_COPPER); MOVE vale para qualquer registrador MMIO.
 - Vídeo: 240p/480i/480p/720p, **4 camadas** (P0/P1 são apelidos das camadas 0/1) sobre a cor de fundo, vblank a cada 16 666 667 ps. Por camada (base `VID_LAYER0 + i*0x40`):
-  `ADDR, PITCH, SCX, SCY` (rolagem com `LF_WRAP` em torno de `SIZE = w | h<<16`), `ALPHA` 0..255, `WINX/WINY` (recorte), `FLAGS` (`LF_ENABLE`, `LF_INDEXED` 8 bpp com a CLUT, `LF_WRAP`, `LF_ADD` mistura aditiva).
+  `ADDR, PITCH, SCX, SCY` (rolagem com `LF_WRAP` em torno de `SIZE = w | h<<16`), `ALPHA` 0..255, `WINX/WINY` (recorte), `FLAGS` (`LF_ENABLE`, `LF_INDEXED` 8 bpp com a CLUT, `LF_WRAP`, `LF_ADD` mistura aditiva, `LF_PREMUL` pixels pré-multiplicados: saída = cor·ALPHA + fundo·(1−a), o que deixa brilhos aditivos de alfa 0 aparecerem sobre o céu do Copper).
   `VID_ORDER` define a ordem de desenho (padrão 0x3210 = camada 3 por cima). O Copper altera tudo isso por scanline (paralaxe, janelas, paletas, fade).
 
 ## SnowPaula (48 kHz estéreo 16 bits)

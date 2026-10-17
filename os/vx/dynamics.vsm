@@ -1,0 +1,91 @@
+; dynamics.vsm - SnowVector Dynamics (VPU-B): microprograma padrão da SnowVX para partículas.
+; O estado das partículas mora na DMEM da unidade (não trafega no barramento principal): a cada job integra a posição,
+; gira um oscilador (animação procedural de balanço), dá a volta na caixa (VFRC), suaviza as bordas e emite 2 triângulos
+; por partícula, entregues por DMA à DDR para o FlameCore. Avisa o fim com SIGNAL 1.
+;
+; Estado (64 B): pos x,y,z,0 normalizada [0,1) | vel vx,vy,vz,tamanho(px) | oscilador c,s,0,0 | cor r,g,b,a
+; Job:  s0 = DMEM do primeiro estado   s2 = DMEM do fim   s3 = DDR da saída (288 B por partícula)   s4 = bytes de saída
+;       s5 = DDR das constantes (16 slots)
+; Constantes: 0 velocidade global (w = 0) | 1 (-k, k, 0, 0) giro do oscilador | 2 amplitude do balanço | 3 tamanho da caixa (px, w = 0)
+;       4 origem da caixa (px, w = 1) | 5 uns | 6 zeros | 7-10 cantos do quad (+-1) | 11-14 UV dos cantos | 15 (4,4,4,4)
+; DMEM: constantes 0x0000, estado 0x0100.. (até 160 partículas), saída 0x2A00.
+    SETA s6, 0
+    SETA s7, 256
+    DMAIN s6, s5, s7
+    DMAWAIT
+    VLD v0,  [s6+0]
+    VLD v1,  [s6+1]
+    VLD v2,  [s6+2]
+    VLD v3,  [s6+3]
+    VLD v4,  [s6+4]
+    VLD v5,  [s6+5]
+    VLD v6,  [s6+6]
+    VLD v7,  [s6+7]
+    VLD v8,  [s6+8]
+    VLD v9,  [s6+9]
+    VLD v10, [s6+10]
+    VLD v11, [s6+11]
+    VLD v12, [s6+12]
+    VLD v13, [s6+13]
+    VLD v14, [s6+14]
+    VLD v15, [s6+15]
+    SETA s1, 0x2A00
+loop:
+    VLD v16, [s0+0]           ; posição
+    VLD v17, [s0+1]           ; velocidade | tamanho
+    VLD v18, [s0+2]           ; oscilador
+    VLD v19, [s0+3]           ; cor
+    VMAC v16, v17, v0         ; integra
+    VFRC v16, v16             ; dá a volta na caixa
+    VMAC v18, v1, v18.yxzw    ; (c, s) += k * (-s, c)
+    VDOT3 v20, v18, v18       ; renormaliza o oscilador
+    VRSQ v20, v20
+    VMUL v18, v18, v20
+    VST [s0+0], v16
+    VST [s0+2], v18
+    VMOV v21, v16
+    VMAC v21, v2, v18.yyyy    ; balanço
+    VMUL v21, v21, v3         ; caixa -> tela
+    VADD v21, v21, v4
+    VADD v22, v16, v16        ; fade = min(1, 4 * (1 - |2t - 1|)) nas bordas da caixa
+    VSUB v22, v22, v5
+    VABS v22, v22
+    VSUB v22, v5, v22
+    VMUL v22, v22, v15
+    VMIN v22, v22, v5
+    VMUL v23, v19, v22.yyyy
+    VMUL v24, v7, v17.wwww    ; quatro cantos
+    VADD v24, v24, v21
+    VMUL v25, v8, v17.wwww
+    VADD v25, v25, v21
+    VMUL v26, v9, v17.wwww
+    VADD v26, v26, v21
+    VMUL v27, v10, v17.wwww
+    VADD v27, v27, v21
+    VST [s1+0], v24           ; triângulo 0-1-2
+    VST [s1+1], v23
+    VST [s1+2], v11
+    VST [s1+3], v25
+    VST [s1+4], v23
+    VST [s1+5], v12
+    VST [s1+6], v26
+    VST [s1+7], v23
+    VST [s1+8], v13
+    VST [s1+9], v24           ; triângulo 0-2-3
+    VST [s1+10], v23
+    VST [s1+11], v11
+    VST [s1+12], v26
+    VST [s1+13], v23
+    VST [s1+14], v13
+    VST [s1+15], v27
+    VST [s1+16], v23
+    VST [s1+17], v14
+    SADD s0, s0, 64
+    SADD s1, s1, 288
+    SCMP s0, s2
+    BRLT loop
+    SETA s6, 0x2A00
+    DMAOUT s3, s6, s4
+    DMAWAIT
+    SIGNAL 1
+    HALT

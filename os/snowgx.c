@@ -17,6 +17,7 @@ void gx_clear(GxList *l, unsigned argb, unsigned depth_bits, unsigned flags) { g
 void gx_vertex_base(GxList *l, unsigned addr) { gx_cmd(l, GC_VERTEX_BASE, 1); gx_w(l, addr); }
 void gx_state(GxList *l, unsigned flags) { gx_cmd(l, GC_STATE, 1); gx_w(l, flags); }
 void gx_blend(GxList *l, unsigned src, unsigned dst) { gx_cmd(l, GC_BLEND, 2); gx_w(l, src); gx_w(l, dst); }
+void gx_blend_sep(GxList *l, unsigned src, unsigned dst, unsigned asrc, unsigned adst) { gx_cmd(l, GC_BLEND, 4); gx_w(l, src); gx_w(l, dst); gx_w(l, asrc); gx_w(l, adst); }
 void gx_set_tex(GxList *l, int unit, unsigned addr, int lw, int lh, int fmt, unsigned flags, int nlevels) {
   gx_cmd(l, GC_SET_TEX, 4); gx_w(l, (unsigned)unit); gx_w(l, addr); gx_w(l, (unsigned)lw | ((unsigned)lh << 8) | ((unsigned)fmt << 16) | (flags << 24)); gx_w(l, (unsigned)nlevels);
 }

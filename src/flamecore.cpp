@@ -101,7 +101,8 @@ FlameCore::Stats FlameCore::execute(u32 addr, u32 nwords) {
         state_dirty = true; break;
       }
       case GC_STATE: if (np < 1) { fail("STATE"); break; } cur.flags = P(0); state_dirty = true; break;
-      case GC_BLEND: if (np < 2) { fail("BLEND"); break; } cur.bsrc = P(0); cur.bdst = P(1); state_dirty = true; break;
+      case GC_BLEND: if (np < 2) { fail("BLEND"); break; } cur.bsrc = P(0); cur.bdst = P(1);
+        cur.basrc = np >= 4 ? P(2) : P(0); cur.badst = np >= 4 ? P(3) : P(1); state_dirty = true; break;   // 4 params: fatores próprios do alfa
       case GC_FOG: if (np < 3) { fail("FOG"); break; } cur.fog_color = P(0); cur.fog_start = u2f(P(1)); cur.fog_end = u2f(P(2)); state_dirty = true; break;
       case GC_STENCIL: if (np < 6) { fail("STENCIL"); break; } cur.sfunc = P(0); cur.sref = P(1); cur.smask = P(2); cur.sfail = P(3); cur.zfail = P(4); cur.zpass = P(5); state_dirty = true; break;
       case GC_TEXENV: if (np < 2 || P(0) > 1) { fail("TEXENV"); break; } cur.texenv[P(0)] = P(1); cur.uvscale[P(0)] = np >= 3 ? u2f(P(2)) : 1.0f; state_dirty = true; break;
@@ -310,12 +311,13 @@ u32 FlameCore::shade(const Tri& t, float l0, float l1, float l2) {
   return pack_argb(to8(col[3]), to8(col[0]), to8(col[1]), to8(col[2]));
 }
 
-static u32 blend_px(u32 s, u32 d, u32 sf, u32 df) {
+static u32 blend_px(u32 s, u32 d, u32 sf, u32 df, u32 saf, u32 daf) {
   int sa = s >> 24, da = d >> 24;
   auto fac = [&](u32 k) { switch (k) { case BF_ZERO: return 0; case BF_ONE: return 255; case BF_SRC_ALPHA: return sa; case BF_INV_SRC_ALPHA: return 255 - sa;
                                          case BF_DST_ALPHA: return da; default: return 255 - da; } };
   int fs = fac(sf), fd = fac(df); u32 out = 0;
   for (int sh = 0; sh < 32; sh += 8) {
+    if (sh == 24) { fs = fac(saf); fd = fac(daf); }                          // canal alfa: fatores próprios (GC_BLEND com 4 parâmetros)
     int c = (int)(((s >> sh) & 255) * fs + ((d >> sh) & 255) * fd + 127) / 255; if (c > 255) c = 255;
     out |= (u32)c << sh;
   }
@@ -349,7 +351,7 @@ void FlameCore::imm_tri(const Tri& t, int) {
     if ((f & ST_ATEST) && (src >> 24) < 128) continue;                      // alpha test: descartado antes de Z/stencil/cor
     if (f & ST_STENCIL) stencil_op(tst[i], s.zpass, s.sref);
     if ((f & ST_DEPTH_TEST) && (f & ST_DEPTH_WRITE)) tz[i] = z;
-    tcol[i] = (f & ST_BLEND) ? blend_px(src, tcol[i], s.bsrc, s.bdst) : src;
+    tcol[i] = (f & ST_BLEND) ? blend_px(src, tcol[i], s.bsrc, s.bdst, s.basrc, s.badst) : src;
   }
 }
 

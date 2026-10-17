@@ -186,3 +186,42 @@ TEST(vpu_particle_kernel_bounces_and_stays_above_floor) {
   CHECK(firstBounceMax > 0.1f && firstBounceMax < 1.0f);              // sobe menos que a altura inicial (restituição 0,6)
   CHECK_NEAR(vget(u, PART_IN / 16, 0), -1.0f + 0.5f * 0.01f * 300, 1e-3);   // movimento horizontal uniforme
 }
+
+TEST(vpu_local_dma_in_out_and_wait) {
+  Soc s; Vpu& v = s.vpuA;
+  for (int i = 0; i < 64; i++) s.bus.raw_w32(0x10000 + i * 4, f2u((float)i));
+  u32 sr[8] = {0x400, 0x10000, 256, 0x20000, 0, 0, 0, 0};
+  auto r = vrun(s, "DMAIN s0, s1, s2\nDMAWAIT\nVLD v0,[s0+1]\nVADD v0,v0,v0\nVST [s0+1],v0\nDMAOUT s3, s0, s2\nHALT", sr);
+  CHECK(!r.fault); CHECK_EQ(r.dma_bytes, 512); CHECK_EQ(r.dma_xfers, 2);
+  CHECK_EQ(vget(v, 0x400 / 16 + 1, 0), 8.0f); CHECK_EQ(vget(v, 0x400 / 16 + 2, 0), 8.0f);   // DMEM recebeu a fonte (4 dobrado; 8 intacto)
+  CHECK_EQ(u2f(s.bus.raw_r32(0x20000 + 16)), 8.0f); CHECK_EQ(u2f(s.bus.raw_r32(0x20000 + 252)), 63.0f);
+  // DMAWAIT espera a banda da DDR (256 B a 2128 MB/s ~ 120 ns = 18 ciclos) + preparo; HALT espera o DMAOUT pendente
+  CHECK(r.cycles >= 2 * (VPU_DMA_SETUP + 18));
+  std::vector<u32> p; std::string err;
+  CHECK(vpu_assemble("DMAIN s0, s1, s2\nDMAOUT s3, s0, s2\nDMAWAIT\nSIGNAL 5\nVFRC v1, v2.wzyx", p, err));
+  CHECK(vpu_disasm(p[0]) == "DMAIN s0, s1, s2"); CHECK(vpu_disasm(p[1]) == "DMAOUT s3, s0, s2");
+  CHECK(vpu_disasm(p[2]) == "DMAWAIT"); CHECK(vpu_disasm(p[3]) == "SIGNAL 5"); CHECK(vpu_disasm(p[4]) == "VFRC v1, v2.wzyx");
+  CHECK(!vpu_assemble("SIGNAL 16\n", p, err)); CHECK(!vpu_assemble("DMAIN s0, s1\n", p, err));
+}
+
+TEST(vpu_dma_faults_out_of_range_or_misaligned) {
+  Soc s;
+  u32 a[8] = {0xFFF0, 0x10000, 64, 0, 0, 0, 0, 0}; CHECK(vrun(s, "DMAIN s0, s1, s2\nHALT", a).fault);     // passa do fim da DMEM
+  u32 b[8] = {0, 0xE0000000u, 16, 0, 0, 0, 0, 0}; CHECK(vrun(s, "DMAIN s0, s1, s2\nHALT", b).fault);   // fora das memórias
+  u32 c[8] = {2, 0x10000, 16, 0, 0, 0, 0, 0}; CHECK(vrun(s, "DMAIN s0, s1, s2\nHALT", c).fault);       // desalinhado
+}
+
+TEST(vpu_signal_posts_bridge_semaphore_at_instruction_time) {
+  Soc s; Vpu& v = s.vpuB; std::vector<u32> p; std::string err;
+  CHECK(vpu_assemble("SIGNAL 3\nSETA s1,0\nSETA s2,500\nl:\nSADD s1,s1,1\nSCMP s1,s2\nBRLT l\nSIGNAL 3\nHALT", p, err)); v.load_program(p);
+  u32 z[8] = {0}; CHECK(v.submit(0, z));
+  CHECK_EQ(s.bus.sem[3], 0);                                                // efeito no tempo, não no kick
+  s.sched.advance_to(s.sched.now + cyc2ps(5, VPU_HZ)); CHECK_EQ(s.bus.sem[3], 1);
+  s.wait_until([&] { return !v.busy(); }); CHECK_EQ(s.bus.sem[3], 2); CHECK_EQ(v.signals, 2);
+}
+
+TEST(vpu_vfrc_wraps_lanes) {
+  Soc s; Vpu& v = s.vpuA; vset(v, 0, 1.25f, -0.25f, 3.0f, -2.5f);
+  auto r = vrun(s, "SETA s1,0\nVLD v0,[s1+0]\nVFRC v1,v0\nVST [s1+1],v1\nHALT"); CHECK(!r.fault);
+  CHECK_EQ(vget(v, 1, 0), 0.25f); CHECK_EQ(vget(v, 1, 1), 0.75f); CHECK_EQ(vget(v, 1, 2), 0.0f); CHECK_EQ(vget(v, 1, 3), 0.5f);
+}

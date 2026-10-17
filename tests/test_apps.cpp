@@ -1,6 +1,7 @@
 #include "helpers.h"
 #include "snowcc.h"
 #include "sffs.h"
+#include "sysassets.h"
 #include <fstream>
 
 // ======================= Aplicativos do disco do sistema: menu (Dashboard) e SnowRoids =======================
@@ -15,8 +16,7 @@ static std::vector<u8> build_system_dvd() {
     if (!r.ok) { std::printf("    erro de compilação (%s): %s\n", a.second.c_str(), r.error.c_str()); return {}; }
     files.push_back({a.first, r.image}); fl[a.first] = r.entry; if (a.first == "games/snowroids.bin") g_game = r;
   }
-  for (const char* n : {"font.raw", "font.adv", "logo.raw"}) { std::string d = slurp_s(std::string("assets/") + n); files.push_back({std::string("sys/") + n, std::vector<u8>(d.begin(), d.end())}); }
-  files.push_back({"sys/icons.raw", std::vector<u8>(65536, 0)});
+  for (auto& f : sysassets::system_files()) files.push_back(f);
   std::vector<u8> disc; sffs_build(files, disc, nullptr, &fl); return disc;
 }
 static int lit_pixels(const std::vector<u32>& f) { int n = 0; for (u32 p : f) if (p & 0xFFFFFF) n++; return n; }
@@ -59,4 +59,29 @@ TEST(snowroids_game_over_saves_high_score_to_memory_card) {
   u32 hi = ((u32)g.mcard.data[8 * 512 + 4] << 24) | ((u32)g.mcard.data[8 * 512 + 5] << 16) | ((u32)g.mcard.data[8 * 512 + 6] << 8) | g.mcard.data[8 * 512 + 7];
   CHECK_EQ(hi, 777u);
   CHECK(g.console.out.find("encerrada") == std::string::npos);
+}
+
+// O Dashboard usa o pipeline da especificação: VPU-A (geometria) e VPU-B (partículas) por filas, DMA local e semáforos,
+// FlameCore numa camada pré-multiplicada, HUD pelo Blitter, céu pelo Copper e pad pelo sequenciador da SnowPaula.
+// A navegação pelos painéis também cobre a corrida entre a falta de TLB e a troca de tarefas no kernel.
+TEST(dashboard_drives_every_chip_and_survives_panel_navigation) {
+  auto disc = build_system_dvd(); CHECK(!disc.empty());
+  Soc s; s.dvd.insert(disc); CHECK(s.boot_dvd()); s.video.start();
+  auto key = [&](u8 k) { s.hid.key_event(k, true); s.hid.key_event(k, false); };
+  s.run_frames(90); key(0x28);                                                         // pula a abertura
+  s.run_frames(20);
+  for (u8 k : {0x51, 0x51, 0x28}) { key(k); s.run_frames(8); }                        // SYSTEM
+  s.run_frames(10); key(0x29); s.run_frames(8);
+  for (u8 k : {0x51, 0x51, 0x28, 0x51}) { key(k); s.run_frames(8); }                  // SETTINGS, desce até "Ambient music"
+  s.run_frames(16);
+  CHECK(s.console.out.find("encerrada") == std::string::npos);
+  CHECK(s.vpuA.jobs_done > 100); CHECK(s.vpuB.jobs_done > 100); CHECK(s.vpuA.signals == s.vpuA.jobs_done); CHECK(s.vpuB.signals > 100);
+  CHECK(s.vpuA.dma_bytes > 1000000); CHECK(s.vpuB.dma_bytes > 100000);
+  CHECK(s.blt.sprites_drawn > 1000);
+  CHECK(s.video.layer[0].flags & LF_PREMUL); CHECK(s.video.layer[1].flags & LF_ENABLE);
+  CHECK_EQ(s.bus.cpu_read(PAULA_BASE + PA_SEQ_STATUS, 4), 1u);
+  int orange = 0, ice = 0;
+  for (u32 p : s.video.frame) { int r = (p >> 16) & 255, g = (p >> 8) & 255, b = p & 255; if (r > 200 && g > 70 && g < 170 && b < 90) orange++; if (b > 200 && g > 160 && r < 190) ice++; }
+  CHECK(orange > 300); CHECK(ice > 300);                                               // brasa (seleção/anel) e gelo (cristal)
+  CHECK(lit_pixels(s.video.frame) > 250000);                                           // o céu do Copper preenche o fundo
 }

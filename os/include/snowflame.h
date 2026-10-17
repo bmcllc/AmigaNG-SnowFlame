@@ -148,6 +148,8 @@
 #define VPU_S0             0x20
 #define VPU_FAULTPC        0x40
 #define VPU_TOTAL_CYCLES   0x44
+#define VPU_DMA_BYTES      0x48
+#define VPU_JOBS_DONE      0x4C
 
 #define VPUC_START 1
 #define VPUC_RESET 2
@@ -155,6 +157,9 @@
 #define VPUS_BUSY 1
 #define VPUS_DONE 2
 #define VPUS_FAULT 4
+#define VPU_QUEUE_DEPTH 8
+#define VPU_IMEM_SIZE 8192
+#define VPU_DMEM_SIZE 65536
 
 /* ---- FlameCore ---- */
 #define GPU_CMD_ADDR       0x00
@@ -162,6 +167,10 @@
 #define GPU_CTRL           0x08
 #define GPU_STATUS         0x0C
 #define GPU_HSR            0x10
+#define GPU_STAT_TRIS_IN   0x20
+#define GPU_STAT_TRIS_DRAWN 0x24
+#define GPU_STAT_PIX_SHADED 0x2C
+#define GPU_STAT_CYCLES    0x34
 #define GC_END             0x00
 #define GC_SET_RT          0x01
 #define GC_CLEAR           0x02
@@ -283,6 +292,7 @@
 #define LF_INDEXED         2
 #define LF_WRAP            4
 #define LF_ADD             8
+#define LF_PREMUL          16
 #define VCTRL_P0           1
 #define VCTRL_P1           2
 #define VCTRL_VBLIRQ       4

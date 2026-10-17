@@ -1,0 +1,87 @@
+; geometry.vsm - SnowVector Geometry (VPU-A): microprograma padrão da SnowVX.
+; Transforma, ilumina (difusa + especular de Blinn + brilho de borda) e projeta um lote de vértices, entregando vértices prontos
+; para o FlameCore. Busca e entrega pelo DMA local da unidade (a CPU só enfileira o job) e avisa o fim com SIGNAL 0.
+;
+; Job:  s0 = DDR da entrada (64 B por vértice: pos x,y,z,1 | normal x,y,z,0 | cor r,g,b,a | u,v,fog,0)
+;       s1 = DDR da saída  (48 B por vértice: x,y,z,1/w | r,g,b,a | u,v,fog,0 - formato do FlameCore)
+;       s2 = bytes de entrada (n*64, n <= 448)   s3 = DDR das constantes (18 slots de 16 B)   s4 = bytes de saída (n*48)
+; Constantes: 0-3 MVP (colunas) | 4-6 matriz das normais (colunas, espaço da câmera) | 7 direção da luz | 8 escala da viewport (w = 0)
+;       9 deslocamento da viewport (w = 0) | 10 (0,0,0,1) | 11 cor da luz (w = 0) | 12 zeros | 13 ambiente (w = 1) | 14 uns
+;       15 vetor meio-caminho H | 16 cor especular (w = 0) | 17 cor da borda (w = reforço de alfa nas bordas: vidro)
+; DMEM: constantes 0x0000, entrada 0x0200, saída 0x7200.
+    SETA s6, 0
+    SETA s7, 288
+    DMAIN s6, s3, s7          ; constantes
+    SETA s6, 0x200
+    DMAIN s6, s0, s2          ; vértices
+    DMAWAIT
+    VLD v0,  [s7-18]          ; s7 = 288 = 18 slots: lê as constantes de trás para frente
+    VLD v1,  [s7-17]
+    VLD v2,  [s7-16]
+    VLD v3,  [s7-15]
+    VLD v4,  [s7-14]
+    VLD v5,  [s7-13]
+    VLD v6,  [s7-12]
+    VLD v7,  [s7-11]
+    VLD v8,  [s7-10]
+    VLD v9,  [s7-9]
+    VLD v10, [s7-8]
+    VLD v11, [s7-7]
+    VLD v12, [s7-6]
+    VLD v13, [s7-5]
+    VLD v14, [s7-4]
+    VLD v15, [s7-3]
+    VLD v29, [s7-2]
+    VLD v30, [s7-1]
+    SETA s0, 0x200
+    SADD s5, s2, 0x200        ; fim da entrada na DMEM
+    SETA s7, 0x7200
+loop:
+    VLD v16, [s0+0]           ; posição
+    VLD v17, [s0+1]           ; normal
+    VLD v18, [s0+2]           ; cor do material
+    VLD v19, [s0+3]           ; u, v, fog
+    VMUL v20, v0, v16.xxxx    ; clip = MVP * pos
+    VMAC v20, v1, v16.yyyy
+    VMAC v20, v2, v16.zzzz
+    VMAC v20, v3, v16.wwww
+    VRCP v21, v20.wwww        ; 1/w
+    VMUL v23, v20, v21        ; NDC
+    VMUL v22, v23, v8         ; viewport
+    VADD v22, v22, v9
+    VMAC v22, v21, v10        ; w <- 1/w
+    VMUL v24, v4, v17.xxxx    ; normal no espaço da câmera
+    VMAC v24, v5, v17.yyyy
+    VMAC v24, v6, v17.zzzz
+    VDOT3 v25, v24, v24       ; normaliza (a CPU pode mandar normais sem escala)
+    VRSQ v25, v25
+    VMUL v24, v24, v25
+    VDOT3 v26, v24, v7        ; difusa: max(N.L, 0)
+    VMAX v26, v26, v12
+    VMUL v27, v11, v26
+    VADD v27, v27, v13        ; + ambiente (alfa = 1)
+    VMUL v27, v27, v18        ; x cor do material
+    VDOT3 v28, v24, v15       ; especular: max(N.H, 0)^16
+    VMAX v28, v28, v12
+    VMUL v28, v28, v28
+    VMUL v28, v28, v28
+    VMUL v28, v28, v28
+    VMUL v28, v28, v28
+    VMAC v27, v28, v29
+    VABS v31, v24.zzzz        ; borda: (1 - |N.z|)^2
+    VSUB v31, v14, v31
+    VMUL v31, v31, v31
+    VMAC v27, v31, v30
+    VMIN v27, v27, v14
+    VST [s7+0], v22
+    VST [s7+1], v27
+    VST [s7+2], v19
+    SADD s0, s0, 64
+    SADD s7, s7, 48
+    SCMP s0, s5
+    BRLT loop
+    SETA s6, 0x7200
+    DMAOUT s1, s6, s4         ; entrega o lote na DDR (o FlameCore lê direto de lá)
+    DMAWAIT
+    SIGNAL 0
+    HALT

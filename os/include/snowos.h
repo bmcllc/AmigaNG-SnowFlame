@@ -75,6 +75,7 @@ void gx_clear(GxList *l, unsigned argb, unsigned depth_bits, unsigned flags);
 void gx_vertex_base(GxList *l, unsigned addr);
 void gx_state(GxList *l, unsigned flags);
 void gx_blend(GxList *l, unsigned src, unsigned dst);
+void gx_blend_sep(GxList *l, unsigned src, unsigned dst, unsigned asrc, unsigned adst);   /* fatores próprios para o canal alfa */
 void gx_set_tex(GxList *l, int unit, unsigned addr, int lw, int lh, int fmt, unsigned flags, int nlevels);
 void gx_set_palette(GxList *l, int unit, unsigned addr, int count);
 void gx_texenv(GxList *l, int unit, int mode);
@@ -100,6 +101,15 @@ void vx_load_data(int vpu, unsigned dmem_off, const unsigned *src, int nwords);
 void vx_read_data(int vpu, unsigned dmem_off, unsigned *dst, int nwords);
 int  vx_run(int vpu, unsigned pc, unsigned s0, unsigned s1, unsigned s2, unsigned s3);   /* bloqueante; 0 = ok, -1 = falha */
 unsigned vx_cycles(int vpu);
+/* modo assíncrono (filas de comandos, DMA local e semáforos do SnowBridge): a CPU publica jobs e segue trabalhando */
+int  vx_load_file(int vpu, const char *path, unsigned at_word);   /* microprograma .vx do SnowFS -> IMEM (DMA); nº de palavras ou -1 */
+int  vx_submit(int vpu, unsigned pc, const unsigned *s, int ns);   /* enfileira um job com s0..s(ns-1); não bloqueia; -1 = fila cheia */
+int  vx_busy(int vpu);                           /* 1 enquanto houver job rodando ou na fila */
+void vx_wait(int vpu);                           /* espera a fila esvaziar (cede a CPU a outras tarefas) */
+int  vx_sem_take(int n);                         /* P não bloqueante no semáforo n do SnowBridge (1 = obteve) */
+void vx_sem_wait(int n);                         /* espera um SIGNAL n de um microprograma */
+void vx_sem_reset(int n);                        /* zera o semáforo n */
+int  vx_dma_to_dmem(int vpu, unsigned dmem_off, const void *src, unsigned len);   /* DMA do SnowBridge DDR -> DMEM */
 
 /* ------------------------------ SnowAudio ---------------------------- */
 #define SND_PCM8  0

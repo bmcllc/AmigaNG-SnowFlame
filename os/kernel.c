@@ -188,8 +188,13 @@ __interrupt unsigned os_fault(unsigned sp) {
   unsigned vec = (c->fmt_sr >> 18) & 0xFF;
   if (c->fmt_sr & 0x2000) { os_printf("[os] PANIC: vetor %d no kernel, pc=%x\n", vec, c->pc); os_exit_code = -1; __halt(); }
   if (vec == 2 && mmu_active && (REG(MMU_BASE + MMU_FSR) & 3) == 1) {   /* falha de TLB: preenche se o mapa permitir e refaz a instrução */
-    unsigned va = REG(MMU_BASE + MMU_FAR) & ~(PAGE - 1), perm = user_perm(va, &tasks[cur]);
-    if (perm) { REG(MMU_BASE + MMU_FSR) = 0; REG(MMU_BASE + MMU_AR) = va; REG(MMU_BASE + MMU_TR) = va | perm; REG(MMU_BASE + MMU_OP) = 1; return sp; }
+    /* o erro de acesso não eleva o nível de IRQ: sem a máscara, uma troca de tarefa no meio (mmu_drop_stack grava MMU_AR)
+       faria o MMU_OP = 1 inserir a página da pilha apontando para a página física desta falta */
+    unsigned osr = __get_sr(), va, perm;
+    __set_sr(osr | 0x0700);
+    va = REG(MMU_BASE + MMU_FAR) & ~(PAGE - 1); perm = user_perm(va, &tasks[cur]);
+    if (perm) { REG(MMU_BASE + MMU_FSR) = 0; REG(MMU_BASE + MMU_AR) = va; REG(MMU_BASE + MMU_TR) = va | perm; REG(MMU_BASE + MMU_OP) = 1; __set_sr(osr); return sp; }
+    __set_sr(osr);
   }
   if (vec == 2) os_printf("[os] tarefa %d encerrada: acesso inválido a %x em pc=%x\n", cur, REG(MMU_BASE + MMU_FAR), c->pc);
   else os_printf("[os] tarefa %d encerrada: exceção vetor %d em pc=%x\n", cur, vec, c->pc);
