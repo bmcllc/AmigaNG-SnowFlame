@@ -2,6 +2,8 @@
 // e controlador de vídeo (2 planos ARGB sobre cor de fundo, com efeitos por scanline via Copper).
 #pragma once
 #include "bus.h"
+#include "hostpool.h"
+#include <memory>
 
 namespace sf {
 
@@ -33,6 +35,7 @@ class Copper : public Device {
   // Executa instruções do Copper até um WAIT posterior à linha atual.
   void run_line(int line);
   u64 ops_executed = 0;
+  std::function<void(u32 addr)> before_move;   // chamado antes de cada MOVE (o vídeo compõe as linhas pendentes se o alvo tiver efeitos fora dele)
  private:
   Bus& bus; u32 pc = 0; bool ended = true;
 };
@@ -57,6 +60,13 @@ class Video : public Device {
   Bus& bus; Copper& cop; int W = 320, H = 240; bool started = false;
   void set_mode(u32 m);
   void compose();
+  // Composição: o Copper roda em série linha a linha e cada linha guarda o seu estado (camadas, fundo, paleta); os pixels das
+  // linhas pendentes saem em paralelo no host antes de qualquer MOVE do Copper com efeito fora dos registradores do vídeo.
+  struct Row { const u8* p; int w, bpp; bool idx, wrap, add, pre; i32 scx; u32 alpha; int x0, x1; };
+  struct Line { int y, nrows, pal; u32 bg; Row rows[abi::VID_LAYERS]; };
+  std::vector<Line> pend; std::vector<u32> pend_pal; std::unique_ptr<HostPool> pool;
+  void compose_line(const Line& ln);
+  void compose_flush();
   bool enabled(int i) const { return (i < 2 && (ctrl & (1u << i))) || (layer[i].flags & abi::LF_ENABLE); }
   bool indexed(int i) const { return (i < 2 && (ctrl & (8u << i))) || (layer[i].flags & abi::LF_INDEXED); }
 };

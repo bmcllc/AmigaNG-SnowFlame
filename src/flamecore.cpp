@@ -205,7 +205,7 @@ void FlameCore::emit(const Vtx& a, const Vtx& b, const Vtx& c) {
 }
 
 // ---------------- Rasterização ----------------
-bool FlameCore::cover(const Tri& t, int px, int py, float& l0, float& l1, float& l2) {
+bool FlameCore::cover(const Tri& t, int px, int py, float& l0, float& l1, float& l2) const {
   i64 sx = (i64)px * 16 + 8, sy = (i64)py * 16 + 8;
   auto edge = [&](int a, int b) { return (i64)(t.x[b] - t.x[a]) * (sy - t.y[a]) - (i64)(t.y[b] - t.y[a]) * (sx - t.x[a]); };
   auto tl = [&](int a, int b) { i32 dx = t.x[b] - t.x[a], dy = t.y[b] - t.y[a]; return (dy == 0 && dx > 0) || dy < 0; };
@@ -265,7 +265,7 @@ u32 FlameCore::texel(const Tex& t, const u32* pal, int level, int x, int y) {
   }
 }
 
-void FlameCore::sample(const RState& s, int unit, float u, float v, float lod, float out[4]) {
+void FlameCore::sample(TileCtx& c, const RState& s, int unit, float u, float v, float lod, float out[4]) const {
   const Tex& t = s.tex[unit];
   if (!t.valid) { out[0] = out[1] = out[2] = out[3] = 1.0f; return; }
   int level = t.nlevels > 1 ? clampi((int)(lod + 0.5f), 0, t.nlevels - 1) : 0;
@@ -279,23 +279,23 @@ void FlameCore::sample(const RState& s, int unit, float u, float v, float lod, f
     unpack(texel(t, pal, level, x0, y0), c00); unpack(texel(t, pal, level, x0 + 1, y0), c10);
     unpack(texel(t, pal, level, x0, y0 + 1), c01); unpack(texel(t, pal, level, x0 + 1, y0 + 1), c11);
     for (int i = 0; i < 4; i++) out[i] = (c00[i] * (1 - tx) + c10[i] * tx) * (1 - ty) + (c01[i] * (1 - tx) + c11[i] * tx) * ty;
-    st.texfetch += 4;
+    c.st.texfetch += 4;
   } else {
-    unpack(texel(t, s.pal[unit], level, (int)std::floor(fu), (int)std::floor(fv)), out); st.texfetch += 1;
+    unpack(texel(t, s.pal[unit], level, (int)std::floor(fu), (int)std::floor(fv)), out); c.st.texfetch += 1;
   }
 }
 
-u32 FlameCore::shade(const Tri& t, float l0, float l1, float l2) {
+u32 FlameCore::shade(TileCtx& c, const Tri& t, float l0, float l1, float l2) const {
   const RState& s = states[t.state];
   float rhw = l0 * t.v[0].rhw + l1 * t.v[1].rhw + l2 * t.v[2].rhw;
   float p0 = l0 * t.v[0].rhw / rhw, p1 = l1 * t.v[1].rhw / rhw, p2 = l2 * t.v[2].rhw / rhw;
   auto I = [&](float a, float b, float c) { return p0 * a + p1 * b + p2 * c; };
   float col[4] = {I(t.v[0].r, t.v[1].r, t.v[2].r), I(t.v[0].g, t.v[1].g, t.v[2].g), I(t.v[0].b, t.v[1].b, t.v[2].b), I(t.v[0].a, t.v[1].a, t.v[2].a)};
-  float u = I(t.v[0].u, t.v[1].u, t.v[2].u), v = I(t.v[0].v, t.v[1].v, t.v[2].v), fogc = I(t.v[0].fog, t.v[1].fog, t.v[2].fog);
-  float u1 = I(t.v[0].u1, t.v[1].u1, t.v[2].u1), v1 = I(t.v[0].v1, t.v[1].v1, t.v[2].v1);
   for (int unit = 0; unit < 2; unit++) {
     if (!(s.flags & (unit ? ST_TEX1 : ST_TEX0))) continue;
-    float tx[4]; if (unit == 1 && (s.flags & ST_UV1)) sample(s, unit, u1, v1, t.lod[unit], tx); else sample(s, unit, u, v, t.lod[unit], tx);
+    float tx[4];                                                        // coordenadas interpoladas só quando usadas
+    if (unit == 1 && (s.flags & ST_UV1)) sample(c, s, unit, I(t.v[0].u1, t.v[1].u1, t.v[2].u1), I(t.v[0].v1, t.v[1].v1, t.v[2].v1), t.lod[unit], tx);
+    else sample(c, s, unit, I(t.v[0].u, t.v[1].u, t.v[2].u), I(t.v[0].v, t.v[1].v, t.v[2].v), t.lod[unit], tx);
     switch (s.texenv[unit]) {
       case TE_REPLACE: for (int i = 0; i < 4; i++) col[i] = tx[i]; break;
       case TE_DECAL: for (int i = 0; i < 3; i++) col[i] = tx[i] * tx[3] + col[i] * (1 - tx[3]); break;
@@ -304,6 +304,7 @@ u32 FlameCore::shade(const Tri& t, float l0, float l1, float l2) {
     }
   }
   if ((s.flags & ST_FOG) && !(s.flags & ST_UV1)) {
+    float fogc = I(t.v[0].fog, t.v[1].fog, t.v[2].fog);
     float den = s.fog_end - s.fog_start; float f = den != 0 ? clampf((fogc - s.fog_start) / den, 0, 1) : 1.0f;
     float fc[3] = {((s.fog_color >> 16) & 255) / 255.0f, ((s.fog_color >> 8) & 255) / 255.0f, (s.fog_color & 255) / 255.0f};
     for (int i = 0; i < 3; i++) col[i] = col[i] * (1 - f) + fc[i] * f;
@@ -334,64 +335,99 @@ static void stencil_op(u8& sv, u32 op, u32 ref) {
                 case SOP_DECR: if (sv > 0) sv--; break; case SOP_INVERT: sv = ~sv; break; default: break; }
 }
 
-void FlameCore::imm_tri(const Tri& t, int) {
+void FlameCore::imm_tri(TileCtx& c, const Tri& t) const {
   const RState& s = states[t.state]; u32 f = s.flags, df = (f >> ST_DEPTH_FUNC_SHIFT) & 7;
-  int x0 = std::max(t.minx, tox), x1 = std::min(t.maxx, tox + TILE - 1), y0 = std::max(t.miny, toy), y1 = std::min(t.maxy, toy + TILE - 1);
-  for (int py = y0; py <= y1; py++) for (int px = x0; px <= x1; px++) {
-    float l0, l1, l2; if (!cover(t, px, py, l0, l1, l2)) continue;
-    st.pix_covered++;
-    int i = (py - toy) * TILE + (px - tox);
+  int x0 = std::max(t.minx, c.tox), x1 = std::min(t.maxx, c.tox + TILE - 1), y0 = std::max(t.miny, c.toy), y1 = std::min(t.maxy, c.toy + TILE - 1);
+  // Funções de aresta avançadas por incremento ao longo da linha (inteiras e exatas: o mesmo resultado de cover());
+  // o triângulo é convexo, então a linha termina ao sair dele.
+  const int ea[3] = {1, 2, 0}, eb[3] = {2, 0, 1}; bool tlf[3]; i64 step[3];
+  for (int k = 0; k < 3; k++) {
+    i32 dx = t.x[eb[k]] - t.x[ea[k]], dy = t.y[eb[k]] - t.y[ea[k]];
+    tlf[k] = (dy == 0 && dx > 0) || dy < 0; step[k] = -(i64)dy * 16;
+  }
+  const double inv = 1.0 / (double)t.area;
+  for (int py = y0; py <= y1; py++) {
+    i64 e[3], sy = (i64)py * 16 + 8, sx = (i64)x0 * 16 + 8; bool was_in = false;
+    for (int k = 0; k < 3; k++) e[k] = (i64)(t.x[eb[k]] - t.x[ea[k]]) * (sy - t.y[ea[k]]) - (i64)(t.y[eb[k]] - t.y[ea[k]]) * (sx - t.x[ea[k]]);
+    for (int px = x0; px <= x1; px++, e[0] += step[0], e[1] += step[1], e[2] += step[2]) {
+    bool in = (e[0] > 0 || (e[0] == 0 && tlf[0])) && (e[1] > 0 || (e[1] == 0 && tlf[1])) && (e[2] > 0 || (e[2] == 0 && tlf[2]));
+    if (!in) { if (was_in) break; continue; }
+    was_in = true;
+    float l0 = (float)(e[0] * inv), l1 = (float)(e[1] * inv), l2 = (float)(e[2] * inv);
+    c.st.pix_covered++;
+    int i = (py - c.toy) * TILE + (px - c.tox);
     float z = l0 * t.v[0].z + l1 * t.v[1].z + l2 * t.v[2].z; if (z < 0 || z > 1) continue;
     if (f & ST_STENCIL) {
-      if (!sfunc(s.sfunc, s.sref & s.smask, tst[i] & s.smask)) { stencil_op(tst[i], s.sfail, s.sref); continue; }
+      if (!sfunc(s.sfunc, s.sref & s.smask, c.tst[i] & s.smask)) { stencil_op(c.tst[i], s.sfail, s.sref); continue; }
     }
-    bool dp = !(f & ST_DEPTH_TEST) || dfunc(df, z, tz[i]);
-    if (!dp) { if (f & ST_STENCIL) stencil_op(tst[i], s.zfail, s.sref); continue; }
-    u32 src = shade(t, l0, l1, l2); st.pix_shaded++;
+    bool dp = !(f & ST_DEPTH_TEST) || dfunc(df, z, c.tz[i]);
+    if (!dp) { if (f & ST_STENCIL) stencil_op(c.tst[i], s.zfail, s.sref); continue; }
+    u32 src = shade(c, t, l0, l1, l2); c.st.pix_shaded++;
     if ((f & ST_ATEST) && (src >> 24) < 128) continue;                      // alpha test: descartado antes de Z/stencil/cor
-    if (f & ST_STENCIL) stencil_op(tst[i], s.zpass, s.sref);
-    if ((f & ST_DEPTH_TEST) && (f & ST_DEPTH_WRITE)) tz[i] = z;
-    tcol[i] = (f & ST_BLEND) ? blend_px(src, tcol[i], s.bsrc, s.bdst, s.basrc, s.badst) : src;
+    if (f & ST_STENCIL) stencil_op(c.tst[i], s.zpass, s.sref);
+    if ((f & ST_DEPTH_TEST) && (f & ST_DEPTH_WRITE)) c.tz[i] = z;
+    c.tcol[i] = (f & ST_BLEND) ? blend_px(src, c.tcol[i], s.bsrc, s.bdst, s.basrc, s.badst) : src;
+    }
   }
 }
 
-void FlameCore::render_tile(int tx, int ty, const std::vector<u32>& bin) {
-  tox = tx * TILE; toy = ty * TILE;
+void FlameCore::render_tile(TileCtx& c, int tx, int ty, const std::vector<u32>& bin) const {
+  const int tox = c.tox = tx * TILE, toy = c.toy = ty * TILE;
+  u8* fb = bus.raw(rt.addr, rt.pitch * (u32)rt.h);            // validado em GC_SET_RT
   for (int y = 0; y < TILE; y++) for (int x = 0; x < TILE; x++) {
     int i = y * TILE + x, px = tox + x, py = toy + y;
-    if (clr.flags & CLR_COLOR) tcol[i] = clr.argb;
-    else tcol[i] = (px < rt.w && py < rt.h) ? bus.raw_r32(rt.addr + py * rt.pitch + px * 4) : 0;
-    tz[i] = clr.depth; tst[i] = 0;
+    if (clr.flags & CLR_COLOR) c.tcol[i] = clr.argb;
+    else c.tcol[i] = (px < rt.w && py < rt.h) ? rbe32(fb + (size_t)py * rt.pitch + px * 4) : 0;
+    c.tz[i] = clr.depth; c.tst[i] = 0;
   }
   size_t i = 0;
   while (i < bin.size()) {
     if (hsr && eligible(tris[bin[i]])) {
       size_t j = i; while (j < bin.size() && eligible(tris[bin[j]])) j++;
-      for (int k = 0; k < TILE * TILE; k++) tvis[k] = -1;
+      for (int k = 0; k < TILE * TILE; k++) c.tvis[k] = -1;
       for (size_t k = i; k < j; k++) {
         const Tri& t = tris[bin[k]]; u32 df = (states[t.state].flags >> ST_DEPTH_FUNC_SHIFT) & 7;
         int x0 = std::max(t.minx, tox), x1 = std::min(t.maxx, tox + TILE - 1), y0 = std::max(t.miny, toy), y1 = std::min(t.maxy, toy + TILE - 1);
         for (int py = y0; py <= y1; py++) for (int px = x0; px <= x1; px++) {
           float l0, l1, l2; if (!cover(t, px, py, l0, l1, l2)) continue;
-          st.pix_covered++;
+          c.st.pix_covered++;
           int q = (py - toy) * TILE + (px - tox);
           float z = l0 * t.v[0].z + l1 * t.v[1].z + l2 * t.v[2].z; if (z < 0 || z > 1) continue;
-          if (dfunc(df, z, tz[q])) { tz[q] = z; tvis[q] = bin[k]; }
+          if (dfunc(df, z, c.tz[q])) { c.tz[q] = z; c.tvis[q] = bin[k]; }
         }
       }
-      for (int q = 0; q < TILE * TILE; q++) if (tvis[q] >= 0) {     // sombreia apenas o pixel visível, uma vez
-        const Tri& t = tris[tvis[q]]; float l0, l1, l2;
+      for (int q = 0; q < TILE * TILE; q++) if (c.tvis[q] >= 0) {     // sombreia apenas o pixel visível, uma vez
+        const Tri& t = tris[c.tvis[q]]; float l0 = 0, l1 = 0, l2 = 0;
         cover(t, tox + (q % TILE), toy + (q / TILE), l0, l1, l2);
-        tcol[q] = shade(t, l0, l1, l2); st.pix_shaded++;
+        c.tcol[q] = shade(c, t, l0, l1, l2); c.st.pix_shaded++;
       }
       i = j;
-    } else { imm_tri(tris[bin[i]], (int)i); i++; }
+    } else { imm_tri(c, tris[bin[i]]); i++; }
   }
   for (int y = 0; y < TILE; y++) for (int x = 0; x < TILE; x++) {
     int px = tox + x, py = toy + y;
-    if (px < rt.w && py < rt.h) { bus.raw_w32(rt.addr + py * rt.pitch + px * 4, tcol[y * TILE + x]); st.vram_write += 4; }
+    if (px < rt.w && py < rt.h) { wbe32(fb + (size_t)py * rt.pitch + px * 4, c.tcol[y * TILE + x]); c.st.vram_write += 4; }
   }
-  st.tiles++;
+  c.st.tiles++;
+}
+
+// Alguma textura usada nesta lista lê a memória do render target? (render-to-texture no mesmo FLUSH: a ordem dos blocos
+// importa, então a renderização fica serial)
+bool FlameCore::rt_is_texture() const {
+  u64 r0 = rt.addr, r1 = r0 + (u64)rt.pitch * (u32)rt.h;
+  for (const RState& s : states) for (const Tex& t : s.tex) {
+    if (!t.valid) continue;
+    u64 sz = 0; for (int l = 0; l < t.nlevels; l++) sz = t.off[l] + tex_level_bytes(t.fmt, std::max(1, (1 << t.lw) >> l), std::max(1, (1 << t.lh) >> l));
+    if (t.addr < r1 && r0 < t.addr + sz) return true;
+  }
+  return false;
+}
+
+FlameCore::FlameCore(Bus& b) : bus(b) {}
+FlameCore::~FlameCore() {}
+
+static void add_stats(FlameCore::Stats& a, const FlameCore::Stats& b) {
+  a.pix_covered += b.pix_covered; a.pix_shaded += b.pix_shaded; a.tiles += b.tiles; a.texfetch += b.texfetch; a.vram_write += b.vram_write;
 }
 
 void FlameCore::flush() {
@@ -403,11 +439,20 @@ void FlameCore::flush() {
     const Tri& t = tris[i];
     for (int ty = t.miny / TILE; ty <= t.maxy / TILE; ty++) for (int tx = t.minx / TILE; tx <= t.maxx / TILE; tx++) { bins[(size_t)ty * tw + tx].push_back((u32)i); st.bin_entries++; }
   }
-  for (int ty = 0; ty < th; ty++) for (int tx = 0; tx < tw; tx++) {
-    auto& b = bins[(size_t)ty * tw + tx];
-    if (b.empty() && !(clr.flags & CLR_COLOR)) continue;       // bloco intacto: nenhuma escrita na VRAM
-    render_tile(tx, ty, b);
-  }
+  std::vector<int> work;                                       // blocos a renderizar (intactos: nenhuma escrita na VRAM)
+  size_t load = 0;
+  for (int k = 0; k < tw * th; k++) if (!bins[k].empty() || (clr.flags & CLR_COLOR)) { work.push_back(k); load += bins[k].size(); }
+  // Blocos em paralelo no host (cada bloco só lê a lista e escreve a própria área do render target; estatísticas por thread
+  // somadas no fim): idêntico ao serial. Render-to-texture no mesmo FLUSH depende da ordem e fica serial.
+  int nthr = host_threads > 0 ? host_threads : HostPool::auto_threads();
+  if (!(work.size() >= 4 && load >= 64 && !rt_is_texture())) nthr = 1;
+  if (nthr > 1 && (!pool || pool->size() != nthr)) pool.reset(new HostPool(nthr));
+  int nctx = nthr > 1 ? nthr : 1;
+  while ((int)ctx.size() < nctx) ctx.emplace_back(new TileCtx);
+  for (int k = 0; k < nctx; k++) ctx[k]->st = Stats();
+  auto job = [&](int w, int thr) { render_tile(*ctx[thr], work[w] % tw, work[w] / tw, bins[work[w]]); };
+  if (nthr > 1) pool->run((int)work.size(), job); else for (int w = 0; w < (int)work.size(); w++) job(w, 0);
+  for (int k = 0; k < nctx; k++) add_stats(st, ctx[k]->st);
   tris.clear(); states.clear(); state_dirty = true; clr.flags = 0;
 }
 

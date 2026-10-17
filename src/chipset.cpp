@@ -132,7 +132,7 @@ void Copper::run_line(int line) {
     switch (w0 >> 28) {
       case COPOP_END: ended = true; return;
       case COPOP_WAIT: if ((int)((w0 >> 12) & 0xFFFF) > line) { pc -= 8; ops_executed--; return; } break;
-      case COPOP_MOVE: { u32 a = MMIO_BASE | (w0 & 0x0FFFFFFF); if (a >= COP_BASE && a < COP_BASE + 0x10000) break; bus.cpu_write(a, 4, w1); break; }
+      case COPOP_MOVE: { u32 a = MMIO_BASE | (w0 & 0x0FFFFFFF); if (a >= COP_BASE && a < COP_BASE + 0x10000) break; if (before_move) before_move(a); bus.cpu_write(a, 4, w1); break; }
       case COPOP_JUMP: pc = w1; break;
       case COPOP_SKIP: if (line >= (int)((w0 >> 12) & 0xFFFF)) pc += 8; break;
       case COPOP_IRQ: bus.raise_irq(IRQ_COPPER); break;
@@ -193,15 +193,54 @@ void Video::vblank() {
   if (ctrl & 4) bus.raise_irq(IRQ_VBLANK);
   if (on_frame) on_frame(*this);
 }
+void Video::compose_line(const Line& ln) {
+  const u32* pal = ln.pal >= 0 ? &pend_pal[(size_t)ln.pal * 256] : palette;
+  for (int x = 0; x < W; x++) {
+    u32 c = ln.bg & 0xFFFFFF;
+    for (int k = 0; k < ln.nrows; k++) {
+      const Row& r = ln.rows[k]; if (x < r.x0 || x >= r.x1) continue;
+      i64 sx = (i64)x + r.scx;
+      if (r.wrap) { sx %= r.w; if (sx < 0) sx += r.w; } else if (sx < 0 || sx >= r.w) continue;
+      u32 s = r.idx ? pal[r.p[sx]] : rbe32(r.p + sx * 4), a = (s >> 24) * r.alpha / 255;
+      if (r.pre && !r.add) {                                                  // pré-multiplicado: brilhos aditivos (alfa 0) também aparecem
+        if (!(s & 0xFFFFFF) && !a) continue;
+        u32 o = 0; for (int sh = 0; sh < 24; sh += 8) o |= std::min<u32>(255, ((((s >> sh) & 255) * r.alpha + 127) / 255) + ((((c >> sh) & 255) * (255 - a) + 127) / 255)) << sh;
+        c = o; continue;
+      }
+      if (!a) continue;
+      if (r.add) {
+        u32 o = 0; for (int sh = 0; sh < 24; sh += 8) o |= std::min<u32>(255, ((c >> sh) & 255) + ((((s >> sh) & 255) * a + 127) / 255)) << sh;
+        c = o; continue;
+      }
+      if (a == 255) { c = s & 0xFFFFFF; continue; }
+      u32 o = 0; for (int sh = 0; sh < 24; sh += 8) o |= ((((s >> sh) & 255) * a + ((c >> sh) & 255) * (255 - a) + 127) / 255) << sh;
+      c = o;
+    }
+    frame[(size_t)ln.y * W + x] = c;
+  }
+}
+// Compõe as linhas pendentes (a memória e o estado que elas leem não mudam até aqui; cada linha escreve só a sua parte do quadro).
+void Video::compose_flush() {
+  int n = (int)pend.size(), nthr = HostPool::auto_threads();
+  if (n >= 32 && nthr > 1) {
+    if (!pool) pool.reset(new HostPool(nthr));
+    const int per = 8;
+    pool->run((n + per - 1) / per, [&](int t, int) { for (int k = t * per; k < std::min(n, t * per + per); k++) compose_line(pend[k]); });
+  } else for (const Line& ln : pend) compose_line(ln);
+  pend.clear(); pend_pal.clear();
+}
 void Video::compose() {
   cop.restart();
+  // MOVE do Copper para fora dos registradores do vídeo (ou troca de modo) pode alterar memória/estado lidos pelas linhas já
+  // capturadas: compõe as pendentes antes, como na ordem serial.
+  cop.before_move = [this](u32 a) { if (a < VIDEO_BASE || a >= VIDEO_BASE + 0x1000 || a == VIDEO_BASE + VID_MODE) compose_flush(); };
   bool interlaced = mode == VMODE_480I; int field = frames & 1;
   for (int y = 0; y < H; y++) {
     cur_line = y;
     cop.run_line(y);                                   // efeitos por scanline: Copper altera registradores do vídeo
     if (interlaced && (y & 1) != field) continue;
     // Linha de cada camada (ponteiro para o início da linha do mapa, já com scroll vertical aplicado)
-    struct Row { const u8* p; int w, bpp; bool idx, wrap, add, pre; i32 scx; u32 alpha; int x0, x1; } rows[VID_LAYERS]; int nrows = 0;
+    Line ln; ln.y = y; ln.nrows = 0; ln.pal = -1; ln.bg = bg; bool anyidx = false;
     for (int k = 0; k < VID_LAYERS; k++) {
       int i = (order >> (4 * k)) & 15; if (i >= VID_LAYERS || !enabled(i)) continue;
       const Layer& l = layer[i]; bool idx = indexed(i), wrap = l.flags & LF_WRAP; int bpp = idx ? 1 : 4;
@@ -211,32 +250,14 @@ void Video::compose() {
       if (wrap) { sy %= h; if (sy < 0) sy += h; } else if (sy < 0 || sy >= h) continue;
       u32 ra = l.addr + (u32)sy * l.pitch; if (!bus.raw_ok(ra, (u32)w * bpp)) continue;
       int x0 = l.winx & 0xFFFF, x1 = l.winx >> 16; if (!x1) { x0 = 0; x1 = W; }
-      rows[nrows++] = Row{bus.raw(ra, (u32)w * bpp), w, bpp, idx, wrap, (bool)(l.flags & LF_ADD), (bool)(l.flags & LF_PREMUL), l.scx, l.alpha, x0, std::min(x1, W)};
+      ln.rows[ln.nrows++] = Row{bus.raw(ra, (u32)w * bpp), w, bpp, idx, wrap, (bool)(l.flags & LF_ADD), (bool)(l.flags & LF_PREMUL), l.scx, l.alpha, x0, std::min(x1, W)};
+      anyidx |= idx;
     }
-    for (int x = 0; x < W; x++) {
-      u32 c = bg & 0xFFFFFF;
-      for (int k = 0; k < nrows; k++) {
-        const Row& r = rows[k]; if (x < r.x0 || x >= r.x1) continue;
-        i64 sx = (i64)x + r.scx;
-        if (r.wrap) { sx %= r.w; if (sx < 0) sx += r.w; } else if (sx < 0 || sx >= r.w) continue;
-        u32 s = r.idx ? palette[r.p[sx]] : rbe32(r.p + sx * 4), a = (s >> 24) * r.alpha / 255;
-        if (r.pre && !r.add) {                                                  // pré-multiplicado: brilhos aditivos (alfa 0) também aparecem
-          if (!(s & 0xFFFFFF) && !a) continue;
-          u32 o = 0; for (int sh = 0; sh < 24; sh += 8) o |= std::min<u32>(255, ((((s >> sh) & 255) * r.alpha + 127) / 255) + ((((c >> sh) & 255) * (255 - a) + 127) / 255)) << sh;
-          c = o; continue;
-        }
-        if (!a) continue;
-        if (r.add) {
-          u32 o = 0; for (int sh = 0; sh < 24; sh += 8) o |= std::min<u32>(255, ((c >> sh) & 255) + ((((s >> sh) & 255) * a + 127) / 255)) << sh;
-          c = o; continue;
-        }
-        if (a == 255) { c = s & 0xFFFFFF; continue; }
-        u32 o = 0; for (int sh = 0; sh < 24; sh += 8) o |= ((((s >> sh) & 255) * a + ((c >> sh) & 255) * (255 - a) + 127) / 255) << sh;
-        c = o;
-      }
-      frame[(size_t)y * W + x] = c;
-    }
+    if (anyidx) { ln.pal = (int)(pend_pal.size() / 256); pend_pal.insert(pend_pal.end(), palette, palette + 256); }   // o Copper pode reescrever a paleta
+    pend.push_back(ln);
   }
+  compose_flush();
+  cop.before_move = nullptr;
   cur_line = 0;
 }
 

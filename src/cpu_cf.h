@@ -45,6 +45,17 @@ class Cpu {
   EA ea(int mode, int reg, int size);
   u32 ea_read(const EA& e, int size);
   void ea_write(const EA& e, int size, u32 v);
+  // Corpos sempre expandidos dos acima: com modo/tamanho constantes (manipuladores especializados) os switches somem.
+  inline EA ea_i(int mode, int reg, int size);
+  inline u32 ea_read_i(const EA& e, int size);
+  inline void ea_write_i(const EA& e, int size, u32 v);
+  inline void setnz_i(u32 r, int size);
+  // Despacho por opcode: manipuladores especializados para as formas mais comuns (mesmo código do caminho genérico,
+  // só com campos constantes); os demais vão para exec_t<grupo, modo>.
+  using Handler = void (Cpu::*)(u16);
+  static const Handler* optab();
+  template <int SZ, int SM, int DM> void op_move(u16 op);
+  template <int G, int M> void exec_t(u16 op);
   u32 rd(u32 a_, int sz) { cyc++; bus.cpu_super = sr & 0x2000; return bus.cpu_read(a_, sz); }
   void wr(u32 a_, int sz, u32 v) { cyc++; bus.cpu_super = sr & 0x2000; bus.cpu_write(a_, sz, v); }
   void push32(u32 v) { a[7] -= 4; wr(a[7], 4, v); }

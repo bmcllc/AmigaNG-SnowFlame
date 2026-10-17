@@ -3,15 +3,21 @@
 // interpolação com correção de perspectiva, 2 unidades de textura, fog, blend, stencil.
 #pragma once
 #include "bus.h"
+#include "hostpool.h"
+#include <memory>
 
 namespace sf {
 
 class FlameCore : public Device {
  public:
-  explicit FlameCore(Bus& b) : bus(b) {}
+  explicit FlameCore(Bus& b);
+  ~FlameCore();
   struct Stats { u64 tris_in = 0, tris_drawn = 0, pix_covered = 0, pix_shaded = 0, tiles = 0, cycles = 0, texfetch = 0, vram_write = 0, bin_entries = 0; };
   Stats last, total;
   bool hsr = true;
+  // Threads do host para renderizar blocos em paralelo (só velocidade: cada bloco é independente e o resultado é idêntico
+  // ao serial). 0 = automático (HostPool::auto_threads: núcleos do host ou SF_HOST_THREADS); 1 = serial.
+  int host_threads = 0;
   bool error = false; std::string error_msg;
   u64 lists_done = 0;
 
@@ -48,16 +54,19 @@ class FlameCore : public Device {
   Vtx load_vertex(u32 idx);
   int cur_state();
   bool eligible(const Tri& t) const;
-  bool cover(const Tri& t, int px, int py, float& l0, float& l1, float& l2);
-  u32 shade(const Tri& t, float l0, float l1, float l2);
-  void sample(const RState& s, int unit, float u, float v, float lod, float out[4]);
-  u32 texel(const Tex& t, const u32* pal, int level, int x, int y);
-  void render_tile(int tx, int ty, const std::vector<u32>& bin);
-  void imm_tri(const Tri& t, int ti);
-
-  // buffers do tile
-  u32 tcol[abi::TILE * abi::TILE]; float tz[abi::TILE * abi::TILE]; u8 tst[abi::TILE * abi::TILE]; int tvis[abi::TILE * abi::TILE];
-  int tox = 0, toy = 0;     // origem do tile
+  bool cover(const Tri& t, int px, int py, float& l0, float& l1, float& l2) const;
+  // Contexto de um bloco em renderização (um por thread do host): buffers do bloco, origem e estatísticas parciais.
+  struct TileCtx {
+    u32 tcol[abi::TILE * abi::TILE]; float tz[abi::TILE * abi::TILE]; u8 tst[abi::TILE * abi::TILE]; int tvis[abi::TILE * abi::TILE];
+    int tox = 0, toy = 0; Stats st;
+  };
+  u32 shade(TileCtx& c, const Tri& t, float l0, float l1, float l2) const;
+  void sample(TileCtx& c, const RState& s, int unit, float u, float v, float lod, float out[4]) const;
+  static u32 texel(const Tex& t, const u32* pal, int level, int x, int y);
+  void render_tile(TileCtx& c, int tx, int ty, const std::vector<u32>& bin) const;
+  void imm_tri(TileCtx& c, const Tri& t) const;
+  bool rt_is_texture() const;
+  std::unique_ptr<HostPool> pool; std::vector<std::unique_ptr<TileCtx>> ctx;   // um contexto por thread do pool
 };
 
 }  // namespace sf

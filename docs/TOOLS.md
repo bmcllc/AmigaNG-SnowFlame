@@ -27,3 +27,15 @@ CPI, uso de VPU-A/B, GPU, Blitter, DMA, árbitro de memória (bytes e espera), t
 
 ## m68kxlat / sfclassic
 Veja `docs/SNOWOS.md` (SnowOS Classic).
+
+## sf100_play — jogar numa janela (controle, teclado e som)
+Frontend interativo **opcional** (usa SDL2; o núcleo continua sem dependências e `make` não o compila). `make play` monta o DVD e abre o SnowFlame Dashboard.
+
+    make play
+    ./build/sf100_play [disco.dvd] [--mc cartao.bin] [--scale N] [--boot caminho] [--mute]
+
+Controle (qualquer um reconhecido pelo SDL_GameController): direcional ou analógico esquerdo, A = confirmar, B = voltar, Start, Back = Select, X/Y/LB/RB, gatilhos e analógicos vão para a porta 0.
+Teclado: vai direto para o HID do console (setas, Enter/Espaço, Esc/Backspace...). F11 = tela cheia; F12 ou fechar a janela = sair.
+O cartão de memória é lido e gravado em `out/card.bin`. O título da janela mostra os fps; o áudio pode picotar quando a emulação fica abaixo de 60 fps.
+
+Desempenho: o FlameCore renderiza os blocos e o vídeo compõe as linhas em várias threads do host (`HostPool`; `SF_HOST_THREADS=N` fixa o número, 1 = serial; o resultado é idêntico em qualquer N). O limite é o interpretador ColdFire, que roda numa thread só: o Dashboard executa ~400 mil instruções por quadro (código do snowcc sem otimização emitindo vértices), e num i5-11260H fica em ~20 fps com o perfil de energia "power" (núcleo a ~1,6 GHz). Em notebooks, o modo de energia "desempenho" (turbo até 4,4 GHz) é o que mais aproxima dos 60 fps. Todas as ferramentas compilam com `-ffp-contract=off`: sem ele, o `-march=native` do sf100_play usaria FMA e a emulação deixaria de ser bit a bit igual à dos testes.

@@ -1,5 +1,7 @@
 CXX ?= g++
-CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wno-misleading-indentation -Wno-unused-parameter -Isrc
+# -ffp-contract=off: sem FMA implícito (com -march=native o GCC fundiria a*b+c e mudaria o arredondamento: a emulação deixaria
+# de ser bit a bit igual entre builds). -pthread: FlameCore e vídeo usam threads do host (HostPool).
+CXXFLAGS ?= -std=c++17 -O2 -ffp-contract=off -pthread -Wall -Wextra -Wno-misleading-indentation -Wno-unused-parameter -Isrc
 SRC := src/bus.cpp src/cpu_cf.cpp src/vpu.cpp src/flamecore.cpp src/chipset.cpp src/paula.cpp src/periph.cpp src/soc.cpp src/cfdis.cpp src/debugger.cpp src/profiler.cpp src/snowcc_pp.cpp src/snowcc_parse.cpp src/snowcc_gen.cpp src/cpu68k.cpp src/classic.cpp src/m68k2cf.cpp
 OBJ := $(SRC:src/%.cpp=build/%.o)
 LIB := build/libsnowflame.a
@@ -47,6 +49,16 @@ build/sf100_run: tools/sfrun_main.cpp $(LIB) $(wildcard src/*.h)
 build/sf100_boot: tools/sfboot_main.cpp $(LIB) $(wildcard src/*.h)
 	$(CXX) $(CXXFLAGS) $< $(LIB) -o $@
 
+# Frontend interativo (janela, controle, teclado, som): opcional, usa SDL2 (fora de 'all'; o núcleo segue sem dependências)
+# compilado direto das fontes com otimização para a máquina local (e LTO): a emulação precisa de toda a velocidade possível
+PLAYSRC := src/bus.cpp src/cpu_cf.cpp src/vpu.cpp src/flamecore.cpp src/chipset.cpp src/paula.cpp src/periph.cpp src/soc.cpp src/classic.cpp src/cpu68k.cpp src/cfdis.cpp
+build/sf100_play: tools/sfplay_main.cpp $(PLAYSRC) $(wildcard src/*.h)
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -O3 -march=native -flto=auto $$(pkg-config --cflags sdl2) $< $(PLAYSRC) $$(pkg-config --libs sdl2) -o $@
+
+play: dvd build/sf100_play
+	./build/sf100_play out/snowflame.dvd
+
 # DVD do sistema (menu + recursos + jogos) e boot sem janela
 GAMES ?= --game snowroids=os/apps/games/snowroids.c
 
@@ -68,4 +80,4 @@ demo: build/sf100_demo
 clean:
 	rm -rf build out
 
-.PHONY: all test demo techdemos dvd boot clean
+.PHONY: all test demo techdemos dvd boot play clean

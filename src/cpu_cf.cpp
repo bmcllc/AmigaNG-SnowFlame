@@ -42,7 +42,12 @@ u32 Cpu::brief(u32 base) {
   if (iis > 3) throw Illegal();
   return rd(b + bd, 4) + od;
 }
-Cpu::EA Cpu::ea(int mode, int reg, int size) {
+#define SF_AI __attribute__((always_inline)) inline
+Cpu::EA Cpu::ea(int mode, int reg, int size) { return ea_i(mode, reg, size); }
+u32 Cpu::ea_read(const EA& e, int size) { return ea_read_i(e, size); }
+void Cpu::ea_write(const EA& e, int size, u32 v) { ea_write_i(e, size, v); }
+void Cpu::setnz(u32 r, int s) { setnz_i(r, s); }
+SF_AI Cpu::EA Cpu::ea_i(int mode, int reg, int size) {
   EA e{}; e.reg = reg;
   switch (mode) {
     case 0: e.k = 0; break;
@@ -66,7 +71,7 @@ Cpu::EA Cpu::ea(int mode, int reg, int size) {
   }
   return e;
 }
-u32 Cpu::ea_read(const EA& e, int size) {
+SF_AI u32 Cpu::ea_read_i(const EA& e, int size) {
   switch (e.k) {
     case 0: return d[e.reg] & smask(size);
     case 1: return size == 2 ? (u32)(i32)(i16)a[e.reg] : a[e.reg];
@@ -74,7 +79,7 @@ u32 Cpu::ea_read(const EA& e, int size) {
     default: return e.imm;
   }
 }
-void Cpu::ea_write(const EA& e, int size, u32 v) {
+SF_AI void Cpu::ea_write_i(const EA& e, int size, u32 v) {
   switch (e.k) {
     case 0: d[e.reg] = size == 4 ? v : (d[e.reg] & ~smask(size)) | (v & smask(size)); break;
     case 1: a[e.reg] = v; agu_set(e.reg); break;
@@ -84,7 +89,7 @@ void Cpu::ea_write(const EA& e, int size, u32 v) {
 }
 
 // ---------------- Flags ----------------
-void Cpu::setnz(u32 r, int s) {
+SF_AI void Cpu::setnz_i(u32 r, int s) {
   r &= smask(s); u32 f = 0; if (r == 0) f |= Z; if (r & ssign(s)) f |= N;
   setccr(f, N | Z | V | C);
 }
@@ -188,21 +193,35 @@ int Cpu::step() {
 }
 
 // ---------------- Execução ----------------
-void Cpu::exec() {
-  u16 op = fetch();
-  int grp = op >> 12;
+// MOVE com tamanho e modos constantes: o mesmo código do caso 0x1..0x3 de exec_t. SM/DM = modo, ou 7 + reg para o modo 7.
+template <int SZ, int SM, int DM> void Cpu::op_move(u16 op) {
+  constexpr int sm = SM < 7 ? SM : 7, dm = DM < 7 ? DM : 7;
+  EA s = ea_i(sm, SM < 7 ? (op & 7) : SM - 7, SZ);
+  u32 v = ea_read_i(s, SZ);
+  int dr = (op >> 9) & 7;
+  if (dm == 1) { if (SZ == 1) throw Illegal(); a[dr] = SZ == 2 ? (u32)(i32)(i16)v : v; agu_set(dr); return; }
+  EA t = ea_i(dm, DM < 7 ? dr : DM - 7, SZ);
+  if (t.k == 3) throw Illegal();
+  ea_write_i(t, SZ, v); setnz_i(v, SZ);
+}
+
+// Decodificador completo, instanciado por grupo (op[15:12]) e modo de EA da fonte (op[5:3]) constantes: o switch de grupo e os
+// switches de modo de ea()/ea_read()/ea_write() se resolvem em tempo de compilação. A tabela de despacho escolhe a instância
+// de cada opcode, então G e M sempre valem os campos do próprio opcode (mesma semântica do código que os lê em tempo de execução).
+template <int G, int M> void Cpu::exec_t(u16 op) {
+  constexpr int grp = G;
   switch (grp) {
     case 0x0: {
-      int mode = (op >> 3) & 7, reg = op & 7;
+      int mode = M, reg = op & 7;
       if ((op & 0x100) || (op & 0xF00) == 0x800) {          // BTST/BCHG/BCLR/BSET
         int tt = (op >> 6) & 3; u32 bit;
         if (op & 0x100) bit = d[(op >> 9) & 7]; else bit = fetch() & 0xFF;
-        EA e = ea(mode, reg, 1);
+        EA e = ea_i(mode, reg, 1);
         if (e.k == 1) throw Illegal();
-        u32 v; if (e.k == 0) { bit &= 31; v = d[e.reg]; } else { bit &= 7; v = ea_read(e, 1); }
+        u32 v; if (e.k == 0) { bit &= 31; v = d[e.reg]; } else { bit &= 7; v = ea_read_i(e, 1); }
         setccr((v >> bit) & 1 ? 0 : Z, Z);
         if (tt == 1) v ^= 1u << bit; else if (tt == 2) v &= ~(1u << bit); else if (tt == 3) v |= 1u << bit;
-        if (tt) { if (e.k == 0) d[e.reg] = v; else ea_write(e, 1, v); }
+        if (tt) { if (e.k == 0) d[e.reg] = v; else ea_write_i(e, 1, v); }
         break;
       }
       if ((op & 0xFFF8) == 0x00C0) { u32 v = d[reg], r = 0; for (int i = 0; i < 32; i++) if (v & (1u << i)) r |= 0x80000000u >> i; d[reg] = r; break; }   // BITREV
@@ -214,15 +233,15 @@ void Cpu::exec() {
       int size = (op >> 6) & 3; if (size == 3) throw Illegal();
       int sz = 1 << size; int sub = (op >> 8) & 0xF;
       u32 imm; { u16 w = 0; if (sz == 4) imm = fetch32(); else { w = fetch(); imm = sz == 1 ? (w & 0xFF) : w; } }
-      EA e = ea(mode, reg, sz);
+      EA e = ea_i(mode, reg, sz);
       if (e.k == 1 || e.k == 3) throw Illegal();
-      u32 x = ea_read(e, sz), r;
+      u32 x = ea_read_i(e, sz), r;
       switch (sub) {
-        case 0x0: r = x | imm; setnz(r, sz); ea_write(e, sz, r); break;
-        case 0x2: r = x & imm; setnz(r, sz); ea_write(e, sz, r); break;
-        case 0x4: r = do_sub(x, imm, sz); ea_write(e, sz, r); break;
-        case 0x6: r = do_add(x, imm, sz); ea_write(e, sz, r); break;
-        case 0xA: r = x ^ imm; setnz(r, sz); ea_write(e, sz, r); break;
+        case 0x0: r = x | imm; setnz_i(r, sz); ea_write_i(e, sz, r); break;
+        case 0x2: r = x & imm; setnz_i(r, sz); ea_write_i(e, sz, r); break;
+        case 0x4: r = do_sub(x, imm, sz); ea_write_i(e, sz, r); break;
+        case 0x6: r = do_add(x, imm, sz); ea_write_i(e, sz, r); break;
+        case 0xA: r = x ^ imm; setnz_i(r, sz); ea_write_i(e, sz, r); break;
         case 0xC: do_sub(x, imm, sz, false); break;
         default: throw Illegal();
       }
@@ -230,17 +249,17 @@ void Cpu::exec() {
     }
     case 0x1: case 0x2: case 0x3: {
       int sz = grp == 1 ? 1 : grp == 3 ? 2 : 4;
-      EA s = ea((op >> 3) & 7, op & 7, sz);
-      u32 v = ea_read(s, sz);
+      EA s = ea_i(M, op & 7, sz);
+      u32 v = ea_read_i(s, sz);
       int dm = (op >> 6) & 7, dr = (op >> 9) & 7;
       if (dm == 1) { if (sz == 1) throw Illegal(); a[dr] = sz == 2 ? (u32)(i32)(i16)v : v; agu_set(dr); break; }
-      EA t = ea(dm, dr, sz);
+      EA t = ea_i(dm, dr, sz);
       if (t.k == 3) throw Illegal();
-      ea_write(t, sz, v); setnz(v, sz);
+      ea_write_i(t, sz, v); setnz_i(v, sz);
       break;
     }
     case 0x4: {
-      int mode = (op >> 3) & 7, reg = op & 7;
+      int mode = M, reg = op & 7;
       if (op == 0x4E71) break;
       if (op == 0x4E75) { pc = pop32(); cyc += 3; break; }
       if (op == 0x4E73) { priv(); u32 f = pop32(); pc = pop32(); set_sr(f); break; }
@@ -248,12 +267,12 @@ void Cpu::exec() {
       if (op == 0x4AC8) { priv(); halted = true; reason = HALT_INSN; break; }
       if (op == 0x4AFC) throw Illegal();
       if ((op & 0xFFC0) == 0x4AC0 && mode != 1) {              // TAS
-        EA e = ea(mode, reg, 1); if (e.k == 3) throw Illegal();
-        u32 v = ea_read(e, 1); setnz(v, 1); ea_write(e, 1, v | 0x80); break;
+        EA e = ea_i(mode, reg, 1); if (e.k == 3) throw Illegal();
+        u32 v = ea_read_i(e, 1); setnz_i(v, 1); ea_write_i(e, 1, v | 0x80); break;
       }
       if ((op & 0xFFF8) == 0x4C80) {                           // SATS.L
         if (sr & V) d[reg] = (d[reg] & 0x80000000u) ? 0x7FFFFFFFu : 0x80000000u;
-        setnz(d[reg], 4); break;
+        setnz_i(d[reg], 4); break;
       }
       if ((op & 0xFFF8) == 0x42C0) { d[reg] = (d[reg] & 0xFFFF0000u) | (sr & 0x1F); break; }   // MOVE CCR,Dn
       if ((op & 0xFFF0) == 0x4E40) { exception(32 + (op & 15), pc, -1); break; }
@@ -268,18 +287,18 @@ void Cpu::exec() {
       }
       if ((op & 0xFFF0) == 0x4E60) { priv(); int r = op & 7; if (op & 8) a[r] = other_sp; else other_sp = a[r]; break; }   // MOVE USP
       if ((op & 0xFFF8) == 0x40C0) { priv(); d[reg] = (d[reg] & 0xFFFF0000u) | (sr & 0xFFFF); break; }
-      if ((op & 0xFFC0) == 0x46C0) { priv(); EA e = ea(mode, reg, 2); set_sr(ea_read(e, 2)); break; }
-      if ((op & 0xFFC0) == 0x44C0) { EA e = ea(mode, reg, 2); setccr(ea_read(e, 2), 0x1F); break; }
-      if ((op & 0xF1C0) == 0x41C0 && mode >= 2) { EA e = ea(mode, reg, 4); if (e.k != 2) throw Illegal(); a[(op >> 9) & 7] = e.addr; agu_set((op >> 9) & 7); break; }
-      if ((op & 0xFFF8) == 0x4840) { u32 v = d[reg]; d[reg] = (v << 16) | (v >> 16); setnz(d[reg], 4); break; }
-      if ((op & 0xFFC0) == 0x4840) { EA e = ea(mode, reg, 4); if (e.k != 2) throw Illegal(); push32(e.addr); break; }
-      if ((op & 0xFFF8) == 0x4880) { d[reg] = (d[reg] & 0xFFFF0000u) | (u16)(i16)(i8)d[reg]; setnz(d[reg], 2); break; }
-      if ((op & 0xFFF8) == 0x48C0) { d[reg] = (u32)(i32)(i16)d[reg]; setnz(d[reg], 4); break; }
-      if ((op & 0xFFF8) == 0x49C0) { d[reg] = (u32)(i32)(i8)d[reg]; setnz(d[reg], 4); break; }
+      if ((op & 0xFFC0) == 0x46C0) { priv(); EA e = ea_i(mode, reg, 2); set_sr(ea_read_i(e, 2)); break; }
+      if ((op & 0xFFC0) == 0x44C0) { EA e = ea_i(mode, reg, 2); setccr(ea_read_i(e, 2), 0x1F); break; }
+      if ((op & 0xF1C0) == 0x41C0 && mode >= 2) { EA e = ea_i(mode, reg, 4); if (e.k != 2) throw Illegal(); a[(op >> 9) & 7] = e.addr; agu_set((op >> 9) & 7); break; }
+      if ((op & 0xFFF8) == 0x4840) { u32 v = d[reg]; d[reg] = (v << 16) | (v >> 16); setnz_i(d[reg], 4); break; }
+      if ((op & 0xFFC0) == 0x4840) { EA e = ea_i(mode, reg, 4); if (e.k != 2) throw Illegal(); push32(e.addr); break; }
+      if ((op & 0xFFF8) == 0x4880) { d[reg] = (d[reg] & 0xFFFF0000u) | (u16)(i16)(i8)d[reg]; setnz_i(d[reg], 2); break; }
+      if ((op & 0xFFF8) == 0x48C0) { d[reg] = (u32)(i32)(i16)d[reg]; setnz_i(d[reg], 4); break; }
+      if ((op & 0xFFF8) == 0x49C0) { d[reg] = (u32)(i32)(i8)d[reg]; setnz_i(d[reg], 4); break; }
       if ((op & 0xFFC0) == 0x48C0 || (op & 0xFFC0) == 0x4CC0) {   // MOVEM.L
         bool toreg = (op & 0x400); u16 mask = fetch();
         if (mode != 2 && mode != 5) throw Illegal();
-        EA e = ea(mode, reg, 4); u32 ad = e.addr;
+        EA e = ea_i(mode, reg, 4); u32 ad = e.addr;
         for (int i = 0; i < 16; i++) if (mask & (1u << i)) {
           u32& r = i < 8 ? d[i] : a[i - 8];
           if (toreg) r = rd(ad, 4); else wr(ad, 4, r);
@@ -288,7 +307,7 @@ void Cpu::exec() {
         break;
       }
       if ((op & 0xFFC0) == 0x4C00 || (op & 0xFFC0) == 0x4C40) {   // MULx.L / DIVx.L
-        u16 x = fetch(); EA e = ea(mode, reg, 4); u32 src = ea_read(e, 4);
+        u16 x = fetch(); EA e = ea_i(mode, reg, 4); u32 src = ea_read_i(e, 4);
         int dl = (x >> 12) & 7; bool sg = x & 0x800;
         if (op & 0x40) {
           if (src == 0) throw DivZero();
@@ -310,39 +329,39 @@ void Cpu::exec() {
         }
         break;
       }
-      if ((op & 0xFFC0) == 0x4E80) { EA e = ea(mode, reg, 4); if (e.k != 2) throw Illegal(); push32(pc); pc = e.addr; cyc += 2; break; }
-      if ((op & 0xFFC0) == 0x4EC0) { EA e = ea(mode, reg, 4); if (e.k != 2) throw Illegal(); pc = e.addr; cyc += 2; break; }
+      if ((op & 0xFFC0) == 0x4E80) { EA e = ea_i(mode, reg, 4); if (e.k != 2) throw Illegal(); push32(pc); pc = e.addr; cyc += 2; break; }
+      if ((op & 0xFFC0) == 0x4EC0) { EA e = ea_i(mode, reg, 4); if (e.k != 2) throw Illegal(); pc = e.addr; cyc += 2; break; }
       int size = (op >> 6) & 3;
       if (size != 3) {
         int sz = 1 << size; int sub = (op >> 8) & 0xF;
         if (sub == 0x0) {                                    // NEGX (só Dn)
           if (mode != 0) throw Illegal();
-          ea_write(EA{0, reg, 0, 0}, sz, do_subx(0, d[reg], sz)); break;
+          ea_write_i(EA{0, reg, 0, 0}, sz, do_subx(0, d[reg], sz)); break;
         }
         if (sub == 0x2 || sub == 0x4 || sub == 0x6 || sub == 0xA) {   // CLR, NEG, NOT, TST
-          EA e = ea(mode, reg, sz);
-          if (sub == 0xA) { setnz(ea_read(e, sz), sz); break; }
+          EA e = ea_i(mode, reg, sz);
+          if (sub == 0xA) { setnz_i(ea_read_i(e, sz), sz); break; }
           if (e.k == 1 || e.k == 3) throw Illegal();
-          if (sub == 0x2) { ea_write(e, sz, 0); setccr(Z, N | Z | V | C); }
-          else if (sub == 0x4) { u32 r = do_sub(0, ea_read(e, sz), sz); ea_write(e, sz, r); }
-          else { u32 r = ~ea_read(e, sz); setnz(r, sz); ea_write(e, sz, r); }
+          if (sub == 0x2) { ea_write_i(e, sz, 0); setccr(Z, N | Z | V | C); }
+          else if (sub == 0x4) { u32 r = do_sub(0, ea_read_i(e, sz), sz); ea_write_i(e, sz, r); }
+          else { u32 r = ~ea_read_i(e, sz); setnz_i(r, sz); ea_write_i(e, sz, r); }
           break;
         }
       }
       throw Illegal();
     }
     case 0x5: {
-      int mode = (op >> 3) & 7, reg = op & 7; int size = (op >> 6) & 3;
+      int mode = M, reg = op & 7; int size = (op >> 6) & 3;
       if (op == 0x51F8) break; if (op == 0x51FA) { fetch(); break; } if (op == 0x51FB) { fetch32(); break; }   // TPF
       if (size == 3) {                                       // Scc
-        EA e = ea(mode, reg, 1); if (e.k == 1) throw Illegal();
-        ea_write(e, 1, cond((op >> 8) & 15) ? 0xFF : 0); break;
+        EA e = ea_i(mode, reg, 1); if (e.k == 1) throw Illegal();
+        ea_write_i(e, 1, cond((op >> 8) & 15) ? 0xFF : 0); break;
       }
       int sz = 1 << size; u32 q = (op >> 9) & 7; if (q == 0) q = 8; bool sub = op & 0x100;
       if (mode == 1) { a[reg] += sub ? -q : q; agu_set(reg); break; }
-      EA e = ea(mode, reg, sz); if (e.k == 3) throw Illegal();
-      u32 x = ea_read(e, sz); u32 r = sub ? do_sub(x, q, sz) : do_add(x, q, sz);
-      ea_write(e, sz, r);
+      EA e = ea_i(mode, reg, sz); if (e.k == 3) throw Illegal();
+      u32 x = ea_read_i(e, sz); u32 r = sub ? do_sub(x, q, sz) : do_add(x, q, sz);
+      ea_write_i(e, sz, r);
       break;
     }
     case 0x6: {
@@ -358,19 +377,19 @@ void Cpu::exec() {
     case 0x7: {
       if (op & 0x100) {                                      // MVS / MVZ
         int opm = (op >> 6) & 7; if (opm < 4) throw Illegal();
-        int ss = (opm & 1) ? 2 : 1; EA e = ea((op >> 3) & 7, op & 7, ss); u32 v = ea_read(e, ss) & smask(ss);
+        int ss = (opm & 1) ? 2 : 1; EA e = ea_i(M, op & 7, ss); u32 v = ea_read_i(e, ss) & smask(ss);
         if (opm < 6) v = sext(v, ss);
-        d[(op >> 9) & 7] = v; setnz(v, 4); break;
+        d[(op >> 9) & 7] = v; setnz_i(v, 4); break;
       }
-      u32 v = (u32)(i32)(i8)op; d[(op >> 9) & 7] = v; setnz(v, 4); break;
+      u32 v = (u32)(i32)(i8)op; d[(op >> 9) & 7] = v; setnz_i(v, 4); break;
     }
     case 0x8: case 0xC: {
-      int opm = (op >> 6) & 7, dn = (op >> 9) & 7, mode = (op >> 3) & 7, reg = op & 7;
+      int opm = (op >> 6) & 7, dn = (op >> 9) & 7, mode = M, reg = op & 7;
       if (opm == 3 || opm == 7) {
-        EA e = ea(mode, reg, 2); if (e.k == 1) throw Illegal(); u32 src = ea_read(e, 2); bool sg = opm == 7;
+        EA e = ea_i(mode, reg, 2); if (e.k == 1) throw Illegal(); u32 src = ea_read_i(e, 2); bool sg = opm == 7;
         if (grp == 0xC) {                                    // MULU.W / MULS.W
           u32 r = sg ? (u32)((i32)(i16)d[dn] * (i32)(i16)src) : (d[dn] & 0xFFFF) * (src & 0xFFFF);
-          d[dn] = r; setnz(r, 4); cyc += 2;
+          d[dn] = r; setnz_i(r, 4); cyc += 2;
         } else {                                             // DIVU.W / DIVS.W
           if ((src & 0xFFFF) == 0) throw DivZero();
           u32 f = 0;
@@ -384,75 +403,75 @@ void Cpu::exec() {
       }
       int size = opm & 3; if (size == 3) throw Illegal(); int sz = 1 << size;
       if (opm < 4) {
-        EA e = ea(mode, reg, sz); u32 x = ea_read(e, sz);
-        u32 r = grp == 8 ? (d[dn] | x) : (d[dn] & x); setnz(r, sz);
-        ea_write(EA{0, dn, 0, 0}, sz, r);
+        EA e = ea_i(mode, reg, sz); u32 x = ea_read_i(e, sz);
+        u32 r = grp == 8 ? (d[dn] | x) : (d[dn] & x); setnz_i(r, sz);
+        ea_write_i(EA{0, dn, 0, 0}, sz, r);
       } else {
-        EA e = ea(mode, reg, sz); if (e.k == 0 || e.k == 1 || e.k == 3) throw Illegal();
-        u32 x = ea_read(e, sz); u32 r = grp == 8 ? (d[dn] | x) : (d[dn] & x); setnz(r, sz); ea_write(e, sz, r);
+        EA e = ea_i(mode, reg, sz); if (e.k == 0 || e.k == 1 || e.k == 3) throw Illegal();
+        u32 x = ea_read_i(e, sz); u32 r = grp == 8 ? (d[dn] | x) : (d[dn] & x); setnz_i(r, sz); ea_write_i(e, sz, r);
       }
       break;
     }
     case 0x9: case 0xD: case 0xB: {
-      int opm = (op >> 6) & 7, dn = (op >> 9) & 7, mode = (op >> 3) & 7, reg = op & 7;
+      int opm = (op >> 6) & 7, dn = (op >> 9) & 7, mode = M, reg = op & 7;
       if (opm == 3 || opm == 7) {                            // ADDA / SUBA / CMPA
-        int sz = opm == 3 ? 2 : 4; EA e = ea(mode, reg, sz); u32 s_ = sext(ea_read(e, sz), sz);
+        int sz = opm == 3 ? 2 : 4; EA e = ea_i(mode, reg, sz); u32 s_ = sext(ea_read_i(e, sz), sz);
         if (grp == 0xD) { a[dn] += s_; agu_set(dn); } else if (grp == 0x9) { a[dn] -= s_; agu_set(dn); } else do_sub(a[dn], s_, 4, false);
         break;
       }
       int size = opm & 3; int sz = 1 << size; if (size == 3) throw Illegal();
       if (grp != 0xB && opm >= 4 && mode == 0) {             // ADDX / SUBX Dy,Dx
         u32 r = grp == 0xD ? do_addx(d[dn], d[reg], sz) : do_subx(d[dn], d[reg], sz);
-        ea_write(EA{0, dn, 0, 0}, sz, r); break;
+        ea_write_i(EA{0, dn, 0, 0}, sz, r); break;
       }
       if (grp == 0xB) {
-        if (opm < 4) { EA e = ea(mode, reg, sz); do_sub(d[dn], ea_read(e, sz), sz, false); }
+        if (opm < 4) { EA e = ea_i(mode, reg, sz); do_sub(d[dn], ea_read_i(e, sz), sz, false); }
         else {                                               // EOR Dn,<ea>
-          EA e = ea(mode, reg, sz); if (e.k == 1 || e.k == 3) throw Illegal();
-          u32 r = ea_read(e, sz) ^ d[dn]; setnz(r, sz); ea_write(e, sz, r);
+          EA e = ea_i(mode, reg, sz); if (e.k == 1 || e.k == 3) throw Illegal();
+          u32 r = ea_read_i(e, sz) ^ d[dn]; setnz_i(r, sz); ea_write_i(e, sz, r);
         }
         break;
       }
       if (opm < 4) {
-        EA e = ea(mode, reg, sz); u32 x = ea_read(e, sz);
+        EA e = ea_i(mode, reg, sz); u32 x = ea_read_i(e, sz);
         u32 r = grp == 0xD ? do_add(d[dn], x, sz) : do_sub(d[dn], x, sz);
-        ea_write(EA{0, dn, 0, 0}, sz, r);
+        ea_write_i(EA{0, dn, 0, 0}, sz, r);
       } else {
-        EA e = ea(mode, reg, sz); if (e.k == 0 || e.k == 1 || e.k == 3) throw Illegal();
-        u32 x = ea_read(e, sz);
+        EA e = ea_i(mode, reg, sz); if (e.k == 0 || e.k == 1 || e.k == 3) throw Illegal();
+        u32 x = ea_read_i(e, sz);
         u32 r = grp == 0xD ? do_add(x, d[dn], sz) : do_sub(x, d[dn], sz);
-        ea_write(e, sz, r);
+        ea_write_i(e, sz, r);
       }
       break;
     }
     case 0xA: {
       if ((op & 0x01C0) == 0x0140) {                         // MOV3Q.L #imm3,<ea>
         int q = (op >> 9) & 7; u32 v = q == 0 ? 0xFFFFFFFFu : (u32)q;
-        EA e = ea((op >> 3) & 7, op & 7, 4); if (e.k == 3) throw Illegal();
-        ea_write(e, 4, v); if (e.k != 1) setnz(v, 4); break;
+        EA e = ea_i(M, op & 7, 4); if (e.k == 3) throw Illegal();
+        ea_write_i(e, 4, v); if (e.k != 1) setnz_i(v, 4); break;
       }
       // eMAC (CFPRM rev. 3). Bit 8 = 0: MAC/MSAC/MAAAC...; bit 8 = 1: MOV3Q, MOVE ACC/ACCext/MACSR/MASK.
       if (!(op & 0x0100)) { emac_mac(op); break; }
       if ((op & 0x01C0) == 0x0140) {                       // MOV3Q.L #imm3,<ea>
         int q = (op >> 9) & 7; u32 v = q == 0 ? 0xFFFFFFFFu : (u32)q;
-        EA e = ea((op >> 3) & 7, op & 7, 4); if (e.k == 3) throw Illegal();
-        ea_write(e, 4, v); if (e.k != 1) setnz(v, 4); break;
+        EA e = ea_i(M, op & 7, 4); if (e.k == 3) throw Illegal();
+        ea_write_i(e, 4, v); if (e.k != 1) setnz_i(v, 4); break;
       }
       if (op & 0x0800) {                                   // bits 10-9: 0 MACSR, 1 ACCext01, 2 MASK, 3 ACCext23
         int g = (op >> 9) & 3, sub = (op >> 6) & 3;
         if (g == 0) {
-          if (sub == 0) { EA e = ea((op >> 3) & 7, op & 7, 4); macsr = ea_read(e, 4) & 0xFFFu; }
+          if (sub == 0) { EA e = ea_i(M, op & 7, 4); macsr = ea_read_i(e, 4) & 0xFFFu; }
           else if (sub == 2) gw(op & 15, macsr);
           else if (sub == 3 && op == 0xA9C0) setccr(((macsr >> 3) & 1) << 3 | ((macsr >> 2) & 1) << 2 | ((macsr >> 1) & 1) << 1 | (macsr & 1), 0x1F);   // MOVE MACSR,CCR: X=0, N, Z, V, C=EV
           else throw Illegal();
         } else if (g == 2) {
-          if (sub == 0) { EA e = ea((op >> 3) & 7, op & 7, 4); mask = ea_read(e, 4) & 0xFFFFu; }
+          if (sub == 0) { EA e = ea_i(M, op & 7, 4); mask = ea_read_i(e, 4) & 0xFFFFu; }
           else if (sub == 2) gw(op & 15, 0xFFFF0000u | mask);
           else throw Illegal();
         } else {
           int p = g == 1 ? 0 : 2;                          // ACCext01 = ACC1[47:32]:ACC0[47:32]; ACCext23 = ACC3:ACC2
           if (sub == 0) {
-            EA e = ea((op >> 3) & 7, op & 7, 4); u32 v = ea_read(e, 4);
+            EA e = ea_i(M, op & 7, 4); u32 v = ea_read_i(e, 4);
             acc[p] = sext48((acc[p] & 0xFFFFFFFFll) | ((i64)(v & 0xFFFF) << 32));
             acc[p + 1] = sext48((acc[p + 1] & 0xFFFFFFFFll) | ((i64)(v >> 16) << 32));
           } else if (sub == 2) {
@@ -464,7 +483,7 @@ void Cpu::exec() {
       {                                                    // ACCn (bits 10-9): MOVE to/from, MOVCLR
         int n = (op >> 9) & 3, sub = (op >> 6) & 3;
         if (sub == 0 && (op & 0xFC) == 0x10) { emac_copy(n, op & 3); break; }    // MOVE.L ACCy,ACCx
-        if (sub == 0) { EA e = ea((op >> 3) & 7, op & 7, 4); emac_set(n, ea_read(e, 4)); break; }   // MOVE.L <ea>,ACCn
+        if (sub == 0) { EA e = ea_i(M, op & 7, 4); emac_set(n, ea_read_i(e, 4)); break; }   // MOVE.L <ea>,ACCn
         if (sub == 2) { gw(op & 15, emac_store(n)); break; }                    // MOVE.L ACCn,Rx
         if (sub == 3) { gw(op & 15, emac_store(n)); acc[n] = 0; macsr &= ~(0x100u << n); break; }   // MOVCLR
         throw Illegal();
@@ -473,9 +492,9 @@ void Cpu::exec() {
     case 0xE: {
       if (((op >> 6) & 3) == 3) {                            // deslocamento/rotação de 1 bit em memória (palavra): extensão do SF-100
         if (op & 0x0800) throw Illegal();                    // bit 11 = 1 seria bit-field (68020), fora do escopo
-        EA e = ea((op >> 3) & 7, op & 7, 2); if (e.k == 0 || e.k == 1 || e.k == 3) throw Illegal();
-        u32 r = do_shift(ea_read(e, 2), (op >> 9) & 3, op & 0x100, 1, 2);
-        ea_write(e, 2, r);
+        EA e = ea_i(M, op & 7, 2); if (e.k == 0 || e.k == 1 || e.k == 3) throw Illegal();
+        u32 r = do_shift(ea_read_i(e, 2), (op >> 9) & 3, op & 0x100, 1, 2);
+        ea_write_i(e, 2, r);
         break;
       }
       int size = (op >> 6) & 3, sz = 1 << size, reg = op & 7, type = (op >> 3) & 3;
@@ -489,6 +508,53 @@ void Cpu::exec() {
     default: throw Illegal();
   }
 }
+
+#define GM2(g, m) &Cpu::exec_t<(g), (m)>
+#define GM8(g) GM2(g, 0), GM2(g, 1), GM2(g, 2), GM2(g, 3), GM2(g, 4), GM2(g, 5), GM2(g, 6), GM2(g, 7)
+#define GM16(k) GM8(2 * (k)), GM8(2 * (k) + 1)
+const Cpu::Handler* Cpu::optab() {
+  static Handler* tab = []() {
+    static Handler t[65536] = {};
+    // MOVE.B/.W/.L: fonte em todos os modos válidos (0-6, 7.0-7.4), destino 0-6 e absolutos (7.0, 7.1)
+    auto put = [&](int grp, auto szc) {
+      constexpr int SZ = decltype(szc)::value;
+      auto srcs = [&](auto dmc) {
+        constexpr int DM = decltype(dmc)::value;
+        auto one = [&](auto smc) {
+          constexpr int SM = decltype(smc)::value;
+          for (int sr = 0; sr < 8; sr++) for (int dr = 0; dr < 8; dr++) {
+            if ((SM >= 7 && sr != 0) || (DM >= 7 && dr != 0)) continue;
+            int smode = SM < 7 ? SM : 7, sreg = SM < 7 ? sr : SM - 7, dmode = DM < 7 ? DM : 7, dreg = DM < 7 ? dr : DM - 7;
+            t[(grp << 12) | (dreg << 9) | (dmode << 6) | (smode << 3) | sreg] = &Cpu::op_move<SZ, SM, DM>;
+          }
+        };
+        one(std::integral_constant<int, 0>{}); one(std::integral_constant<int, 1>{}); one(std::integral_constant<int, 2>{});
+        one(std::integral_constant<int, 3>{}); one(std::integral_constant<int, 4>{}); one(std::integral_constant<int, 5>{});
+        one(std::integral_constant<int, 6>{}); one(std::integral_constant<int, 7>{}); one(std::integral_constant<int, 8>{});
+        one(std::integral_constant<int, 9>{}); one(std::integral_constant<int, 10>{}); one(std::integral_constant<int, 11>{});
+      };
+      srcs(std::integral_constant<int, 0>{}); srcs(std::integral_constant<int, 1>{}); srcs(std::integral_constant<int, 2>{});
+      srcs(std::integral_constant<int, 3>{}); srcs(std::integral_constant<int, 4>{}); srcs(std::integral_constant<int, 5>{});
+      srcs(std::integral_constant<int, 6>{}); srcs(std::integral_constant<int, 7>{}); srcs(std::integral_constant<int, 8>{});
+    };
+    put(1, std::integral_constant<int, 1>{}); put(3, std::integral_constant<int, 2>{}); put(2, std::integral_constant<int, 4>{});
+    // demais opcodes (e formas de MOVE não especializadas): decodificador completo da instância (grupo, modo)
+    static const Handler gm[128] = { GM16(0), GM16(1), GM16(2), GM16(3), GM16(4), GM16(5), GM16(6), GM16(7) };
+    for (int op = 0; op < 65536; op++) if (!t[op]) t[op] = gm[((op >> 12) << 3) | ((op >> 3) & 7)];
+    return t;
+  }();
+  return tab;
+}
+
+void Cpu::exec() {
+  static const Handler* tab = optab();
+  u16 op = fetch();
+  (this->*tab[op])(op);
+}
+
+#undef GM16
+#undef GM8
+#undef GM2
 
 // ---------------- eMAC (CFPRM rev. 3: EMAC_B) ----------------
 // Acumuladores de 48 bits: ACC[31:0] + extensão de 16 bits (ACCext), guardados como i64 estendido por sinal de bit 47.

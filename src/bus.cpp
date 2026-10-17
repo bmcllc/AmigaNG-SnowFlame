@@ -69,13 +69,13 @@ DCache::Line& Bus::cache_line(u32 a) {
   int set = (a >> 4) & (DCache::SETS - 1); u32 tag = a >> 11;
   for (int w = 0; w < DCache::WAYS; w++) {
     auto& l = dc.lines[set][w];
-    if (l.v && l.tag == tag) { dc.hits++; return l; }
+    if (l.v && l.tag == tag) { dc.hits++; hit_set = set; hit_way = w; return l; }
   }
   dc.misses++; cpu_stall_ps += 60000 + (Ps)16 * 1000000ull / 2128;   // latência DDR + linha de 16 B
   int way = -1;
   for (int w = 0; w < DCache::WAYS; w++) if (!dc.lines[set][w].v) { way = w; break; }
   if (way < 0) way = dc.rr[set]++ & 3;
-  auto& l = dc.lines[set][way];
+  auto& l = dc.lines[set][way]; hit_set = set; hit_way = way;
   if (l.v && l.d) wb(l, set);
   l.v = true; l.d = false; l.tag = tag;
   std::memcpy(l.data, &ddr[a & ~15u], 16);
@@ -115,13 +115,16 @@ void Bus::cache_inval_range(u32 a, u32 len) {
 
 // ---------------- Acesso do CPU ----------------
 bool Bus::xlate(u32 va, u32 acc, u32& pa) {
-  pa = va;
+  pa = va; xl_ti = -1;
   if (!mmu_on || mmu_bypass || va >= MMIO_BASE || (mmu_super_bypass && cpu_super)) return true;
   u32 vpn = va >> 12;
-  for (auto& e : tlb) {
+  int h = tlb_hint[vpn & 63];
+  for (int k = 0; k < 64; k++) {
+    int i = (h + k) & 63; auto& e = tlb[i];
     if (!e.v || e.vpn != vpn) continue;
+    tlb_hint[vpn & 63] = (u8)i;
     if (((e.perm & acc) != acc) || ((e.perm & MP_SUPER) && !cpu_super)) { mmu_fsr = 2 | (acc << 4); mmu_far = va; fault = true; fault_addr = va; return false; }
-    tlb_hits++; pa = (e.ppn << 12) | (va & 0xFFF); return true;
+    tlb_hits++; pa = (e.ppn << 12) | (va & 0xFFF); xl_ti = i; return true;
   }
   tlb_misses++; mmu_fsr = 1 | (acc << 4); mmu_far = va; fault = true; fault_addr = va; return false;
 }
@@ -134,17 +137,24 @@ bool Bus::xlate_span(u32 va, int n, u32 acc, u32* pa) {
 }
 static inline bool crosses_page(u32 a, int size) { return (a & 0xFFF) + (u32)size > 0x1000; }
 
-u32 Bus::cpu_read(u32 a, int size) {
+void Bus::set_hint(LineHint* tab, int n, u32 va, u32 pa) {
+  LineHint& h = tab[(va >> 4) & (n - 1)];
+  h.vline = va & ~15u; h.ep = mode_epoch; h.ti = xl_ti; h.set = hit_set; h.way = hit_way; h.tag = pa >> 11;
+  if (xl_ti >= 0) { h.vpn = tlb[xl_ti].vpn; h.ppn = tlb[xl_ti].ppn; h.perm = tlb[xl_ti].perm; }
+}
+
+u32 Bus::cpu_read_slow(u32 a, int size) {
   if (on_access && !mmu_bypass) on_access(a, size, false);
   if (mmu_on && !mmu_bypass && a < MMIO_BASE && size > 1 && crosses_page(a, size)) {
     u32 pa[4]; if (!xlate_span(a, size, MP_R, pa)) return 0;
     mmu_bypass = true; u32 v = 0; for (int i = 0; i < size; i++) v = (v << 8) | cpu_read(pa[i], 1); mmu_bypass = false;
     return v;
   }
+  u32 va = a;
   { u32 pa; if (!xlate(a, MP_R, pa)) return 0; a = pa; }
   if (a < DDR_SIZE && (u64)a + size <= DDR_SIZE) {
     u8 buf[4];
-    if (cache_enabled) cache_bytes(a, buf, size, false); else std::memcpy(buf, &ddr[a], size);
+    if (cache_enabled) { cache_bytes(a, buf, size, false); if ((a & 15) + (u32)size <= 16 && !on_access) set_hint(rh, DHINTS, va, a); } else std::memcpy(buf, &ddr[a], size);
     return size == 1 ? buf[0] : size == 2 ? rbe16(buf) : rbe32(buf);
   }
   if (a >= MMIO_BASE) {
@@ -165,18 +175,19 @@ u32 Bus::cpu_read(u32 a, int size) {
   if (!p) { fault = true; fault_addr = a; return 0; }
   return size == 1 ? p[0] : size == 2 ? rbe16(p) : rbe32(p);
 }
-void Bus::cpu_write(u32 a, int size, u32 v) {
+void Bus::cpu_write_slow(u32 a, int size, u32 v) {
   if (on_access && !mmu_bypass) on_access(a, size, true);
   if (mmu_on && !mmu_bypass && a < MMIO_BASE && size > 1 && crosses_page(a, size)) {
     u32 pa[4]; if (!xlate_span(a, size, MP_W, pa)) return;        // traduz tudo antes de escrever: falha não deixa escrita parcial
     mmu_bypass = true; for (int i = 0; i < size; i++) cpu_write(pa[i], 1, v >> (8 * (size - 1 - i))); mmu_bypass = false;
     return;
   }
+  u32 va = a;
   { u32 pa; if (!xlate(a, MP_W, pa)) return; a = pa; }
   if (a < DDR_SIZE && (u64)a + size <= DDR_SIZE) {
     u8 buf[4];
     if (size == 1) buf[0] = (u8)v; else if (size == 2) wbe16(buf, (u16)v); else wbe32(buf, v);
-    if (cache_enabled) cache_bytes(a, buf, size, true); else std::memcpy(&ddr[a], buf, size);
+    if (cache_enabled) { cache_bytes(a, buf, size, true); if ((a & 15) + (u32)size <= 16 && !on_access) set_hint(wh, DHINTS, va, a); } else std::memcpy(&ddr[a], buf, size);
     return;
   }
   if (a >= MMIO_BASE) {
@@ -202,21 +213,22 @@ void Bus::cpu_write(u32 a, int size, u32 v) {
 // Linha da I-cache que contém pa (preenche em caso de falta). Só DDR é cacheável.
 const u8* Bus::iline(u32 pa) {
   int set = (pa >> 4) & 127; u32 tag = pa >> 11;
-  for (int w = 0; w < 4; w++) if (ivalid[set][w] && itag[set][w] == tag) { ihits++; return idata[set][w]; }
-  imisses++; int w = irr[set]++ & 3; ivalid[set][w] = true; itag[set][w] = tag;
+  for (int w = 0; w < 4; w++) if (ivalid[set][w] && itag[set][w] == tag) { ihits++; hit_set = set; hit_way = w; return idata[set][w]; }
+  imisses++; int w = irr[set]++ & 3; ivalid[set][w] = true; itag[set][w] = tag; hit_set = set; hit_way = w;
   std::memcpy(idata[set][w], &ddr[pa & ~15u], 16);
   cpu_stall_ps += 60000 + (Ps)16 * 1000000ull / 2128;
   return idata[set][w];
 }
-u16 Bus::fetch16(u32 a) {
+u16 Bus::fetch16_slow(u32 a) {
   ifetches++;
   if (mmu_on && !mmu_bypass && a < MMIO_BASE && (a & 0xFFF) == 0xFFF) {      // palavra de instrução cruzando a página
     u32 pa[2]; if (!xlate_span(a, 2, MP_X, pa)) return 0;
     mmu_bypass = true; u16 v = (u16)((fetch16_byte(pa[0]) << 8) | fetch16_byte(pa[1])); mmu_bypass = false; return v;
   }
+  u32 va = a;
   { u32 pa; if (!xlate(a, MP_X, pa)) return 0; a = pa; }
   if (a < DDR_SIZE - 1 && icache_enabled) {
-    if (!(a & 1)) { const u8* l = iline(a); return rbe16(l + (a & 15)); }
+    if (!(a & 1)) { const u8* l = iline(a); set_hint(fh, FHINTS, va, a); return rbe16(l + (a & 15)); }
     return (u16)((fetch16_byte(a) << 8) | fetch16_byte(a + 1));
   }
   u8* p = raw(a, 2);
