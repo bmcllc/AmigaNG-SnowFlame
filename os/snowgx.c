@@ -44,14 +44,22 @@ unsigned gx_f32(int v) {
   unsigned s = 0, m; int e = 31;
   if (v == 0) return 0;
   if (v < 0) { s = 0x80000000u; m = (unsigned)-v; } else m = (unsigned)v;
-  while (!(m & 0x80000000u)) { m <<= 1; e--; }
+  if (!(m & 0xFFFF0000u)) { m <<= 16; e -= 16; }                   /* normalização binária: 5 testes em vez de até 31 */
+  if (!(m & 0xFF000000u)) { m <<= 8; e -= 8; }
+  if (!(m & 0xF0000000u)) { m <<= 4; e -= 4; }
+  if (!(m & 0xC0000000u)) { m <<= 2; e -= 2; }
+  if (!(m & 0x80000000u)) { m <<= 1; e -= 1; }
   return s | ((unsigned)(e + 127) << 23) | ((m >> 8) & 0x7FFFFF);
 }
 unsigned gx_f32_fx(int fx16) {
   unsigned s = 0, m; int e = 31;
   if (fx16 == 0) return 0;
   if (fx16 < 0) { s = 0x80000000u; m = (unsigned)-fx16; } else m = (unsigned)fx16;
-  while (!(m & 0x80000000u)) { m <<= 1; e--; }
+  if (!(m & 0xFFFF0000u)) { m <<= 16; e -= 16; }                   /* normalização binária: 5 testes em vez de até 31 */
+  if (!(m & 0xFF000000u)) { m <<= 8; e -= 8; }
+  if (!(m & 0xF0000000u)) { m <<= 4; e -= 4; }
+  if (!(m & 0xC0000000u)) { m <<= 2; e -= 2; }
+  if (!(m & 0x80000000u)) { m <<= 1; e -= 1; }
   return s | ((unsigned)(e - 16 + 127) << 23) | ((m >> 8) & 0x7FFFFF);
 }
 void gx_put_vertex(unsigned *v, int x_fx, int y_fx, int z_fx, unsigned argb, int u_fx, int v_fx) {

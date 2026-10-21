@@ -29,25 +29,47 @@ class DCache {
   u64 hits = 0, misses = 0, writebacks = 0;
 };
 
-// Flag do modo de acesso (MMU, supervisor, caches): um bool que avança *epoch quando o valor muda, invalidando de uma vez
+// Épocas de validade das linhas do caminho rápido do Bus: avançam sempre que muda algo de que uma linha gravada dependia.
+// i = busca de instrução (modos, TLB, conteúdo/validade da I-cache); d = dados (modos, TLB, linhas da D-cache).
+struct Epochs { u64 i = 0, d = 0; void all() { ++i; ++d; } };
+
+// Flag do modo de acesso (MMU, supervisor, caches): um bool que avança as épocas quando o valor muda, invalidando de uma vez
 // as linhas do caminho rápido do Bus (que só comparam a época em vez de reler cada flag).
 class ModeFlag {
  public:
-  ModeFlag(bool x, u64* e) : v(x), ep(e) {}
+  ModeFlag(bool x, Epochs* e) : v(x), ep(e) {}
   ModeFlag(const ModeFlag&) = delete;
   ModeFlag& operator=(const ModeFlag&) = delete;
-  ModeFlag& operator=(bool x) { if (v != x) { v = x; ++*ep; } return *this; }
+  ModeFlag& operator=(bool x) { if (v != x) { v = x; ep->all(); } return *this; }
   operator bool() const { return v; }
  private:
-  bool v; u64* ep;
+  bool v; Epochs* ep;
+};
+
+struct TlbEntry { bool v = false; u32 vpn = 0, ppn = 0, perm = 0; };
+// TLB de 64 entradas: o acesso para escrita (operator[] não const, begin()) avança as épocas, então qualquer alteração das entradas
+// invalida as linhas do caminho rápido sem que cada uso as revalide. O Bus lê pela interface const.
+class TlbArray {
+ public:
+  explicit TlbArray(Epochs* e) : ep(e) {}
+  TlbArray(const TlbArray&) = delete;
+  TlbArray& operator=(const TlbArray&) = delete;
+  TlbEntry& operator[](int i) { ep->all(); return a[i]; }
+  const TlbEntry& operator[](int i) const { return a[i]; }
+  TlbEntry* begin() { ep->all(); return a; }
+  TlbEntry* end() { return a + 64; }
+  const TlbEntry* begin() const { return a; }
+  const TlbEntry* end() const { return a + 64; }
+ private:
+  TlbEntry a[64]; Epochs* ep;
 };
 
 class Bus {
  public:
-  u64 mode_epoch = 0;               // avança a cada mudança de um ModeFlag
+  Epochs ep;                        // épocas do caminho rápido (ver Epochs)
   Sched* sched = nullptr;
   std::vector<u8> ddr, vram, aram, sram;
-  ModeFlag cache_enabled{true, &mode_epoch};
+  ModeFlag cache_enabled{true, &ep};
   DCache dc;
   bool fault = false; u32 fault_addr = 0;     // erro de barramento sticky (CPU consulta)
   u32 irq_status = 0, irq_mask = 0;
@@ -64,19 +86,18 @@ class Bus {
   Ps cpu_stall_ps = 0;                             // penalidade acumulada de misses da cache (consumida pelo Soc)
 
   // MMU de software (TLB de 64 entradas, 4 KB). Registradores em MMU_BASE (classe Mmu).
-  struct TlbEntry { bool v = false; u32 vpn = 0, ppn = 0, perm = 0; };
-  TlbEntry tlb[64]; int tlb_rr = 0; ModeFlag mmu_on{false, &mode_epoch}, mmu_super_bypass{false, &mode_epoch}; u32 mmu_far = 0, mmu_fsr = 0;
+  TlbArray tlb{&ep}; int tlb_rr = 0; ModeFlag mmu_on{false, &ep}, mmu_super_bypass{false, &ep}; u32 mmu_far = 0, mmu_fsr = 0;
   u8 tlb_hint[64] = {0};            // dica de busca por vpn & 63 (só velocidade: a entrada é sempre revalidada)
-  ModeFlag cpu_super{true, &mode_epoch};      // modo supervisor corrente da CPU (atualizado pelo núcleo)
-  ModeFlag mmu_bypass{false, &mode_epoch};    // acessos de exceção da CPU (pilha/vetores) são físicos
+  ModeFlag cpu_super{true, &ep};      // modo supervisor corrente da CPU (atualizado pelo núcleo)
+  ModeFlag mmu_bypass{false, &ep};    // acessos de exceção da CPU (pilha/vetores) são físicos
   bool xlate(u32 va, u32 acc, u32& pa);
   u64 tlb_hits = 0, tlb_misses = 0;
   // Cache de instruções (somente temporização): 32 KB, 4 vias, linhas de 16 B.
   // A I-cache guarda os bytes das linhas: sem snoop, uma instrução alterada em memória só é vista depois de ICACHE_INVAL_*
   // (o carregador do host, Bus::raw_write/Soc::load, invalida sozinho). Busca de instrução não passa pela D-cache.
   u32 itag[128][4] = {{0}}; bool ivalid[128][4] = {{false}}; u8 irr[128] = {0}; u8 idata[128][4][16]; u64 ihits = 0, imisses = 0;
-  ModeFlag icache_enabled{true, &mode_epoch}; u64 ifetches = 0;   // palavras de instrução buscadas (para ferramentas/testes)
-  void icache_inval_all() { std::memset(ivalid, 0, sizeof ivalid); }
+  ModeFlag icache_enabled{true, &ep}; u64 ifetches = 0;   // palavras de instrução buscadas (para ferramentas/testes)
+  void icache_inval_all() { std::memset(ivalid, 0, sizeof ivalid); ep.i++; }
   void icache_inval_range(u32 a, u32 len);
 
   Bus();
@@ -101,20 +122,20 @@ class Bus {
   // a cada uso; os contadores (acertos de TLB/caches, ifetches) avançam exatamente como no caminho completo.
   u32 cpu_read(u32 a, int size) {
     const LineHint& h = rh[(a >> 4) & (DHINTS - 1)];
-    if (!on_access && (a & 15) + (u32)size <= 16 && (a & ~15u) == h.vline && hint_ok(h) && dline_ok(h)) {
+    if (!on_access && (a & 15) + (u32)size <= 16 && (a & ~15u) == h.vline && h.ep == ep.d) {
       dc.hits++; if (h.ti >= 0) tlb_hits++;
-      const u8* p = dc.lines[h.set][h.way].data + (a & 15);
+      const u8* p = h.data + (a & 15);
       return size == 1 ? p[0] : size == 2 ? rbe16(p) : rbe32(p);
     }
     return cpu_read_slow(a, size);
   }
   void cpu_write(u32 a, int size, u32 v) {
     const LineHint& h = wh[(a >> 4) & (DHINTS - 1)];
-    if (!on_access && (a & 15) + (u32)size <= 16 && (a & ~15u) == h.vline && hint_ok(h) && dline_ok(h)) {
+    if (!on_access && (a & 15) + (u32)size <= 16 && (a & ~15u) == h.vline && h.ep == ep.d) {
       dc.hits++; if (h.ti >= 0) tlb_hits++;
-      auto& l = dc.lines[h.set][h.way]; u8* p = l.data + (a & 15);
+      u8* p = h.data + (a & 15);
       if (size == 1) p[0] = (u8)v; else if (size == 2) wbe16(p, (u16)v); else wbe32(p, v);
-      l.d = true; return;
+      h.ln->d = true; return;
     }
     cpu_write_slow(a, size, v);
   }
@@ -124,13 +145,20 @@ class Bus {
   bool peek16(u32 a, u16& v) const { u8 b[2]; if (!peek(a, b, 2)) return false; v = rbe16(b); return true; }
   // Gancho de acessos de dados da CPU (depurador: watchpoints). Chamado com o endereço virtual, antes do acesso.
   std::function<void(u32 addr, int size, bool write)> on_access;
-  u16 fetch16(u32 a) {  // busca de instrução (I-cache em DDR; demais regiões direto)
+  __attribute__((always_inline)) u16 fetch16(u32 a) {  // busca de instrução (I-cache em DDR; demais regiões direto)
     const LineHint& h = fh[(a >> 4) & (FHINTS - 1)];
-    if (!(a & 1) && (a & ~15u) == h.vline && hint_ok(h) && ivalid[h.set][h.way] && itag[h.set][h.way] == h.tag) {
+    if (!(a & 1) && (a & ~15u) == h.vline && h.ep == ep.i) {
       ifetches++; ihits++; if (h.ti >= 0) tlb_hits++;
-      return rbe16(idata[h.set][h.way] + (a & 15));
+      return rbe16(h.data + (a & 15));
     }
     return fetch16_slow(a);
+  }
+
+  // Linha de busca recente (para a CPU guardar a última): valida enquanto ep.i == ep_out; false se a linha de 'a' não está no caminho rápido.
+  bool ifetch_hint(u32 a, const u8*& data, int& ti, u64& ep_out) const {
+    const LineHint& h = fh[(a >> 4) & (FHINTS - 1)];
+    if ((a & ~15u) != h.vline || h.ep != ep.i) return false;
+    data = h.data; ti = h.ti; ep_out = h.ep; return true;
   }
 
   // Cache
@@ -143,18 +171,14 @@ class Bus {
   bool irq_pending() const { return (irq_status & irq_mask) != 0; }
 
  private:
-  struct LineHint { u64 ep = ~0ull; u32 vline = 1; int ti = -1; u32 vpn = 0, ppn = 0, perm = 0; int set = 0, way = 0; u32 tag = 0; };
+  // Linha recente do caminho rápido. Vale enquanto ep (época de busca ou de dados) não avançar: modos, TLB e a validade/identidade
+  // das linhas de cache só mudam em pontos que avançam a época (ModeFlag, TlbArray, preenchimento/invalidação das caches).
+  struct LineHint { u64 ep = ~0ull; u32 vline = 1; int ti = -1; u8* data = nullptr; DCache::Line* ln = nullptr; };   // data: início da linha de cache; ln: a linha da D-cache
   static constexpr int FHINTS = 64, DHINTS = 32;   // tabelas diretas por (va >> 4): busca de instrução / leitura / escrita de dados
   LineHint fh[FHINTS], rh[DHINTS], wh[DHINTS];     // vline ímpar = vazia
   int xl_ti = -1;                    // entrada da TLB usada pelo último xlate bem-sucedido (-1 = sem tradução)
   int hit_set = 0, hit_way = 0;      // via da última linha de cache (I ou D) devolvida
-  bool hint_ok(const LineHint& h) const {
-    if (h.ep != mode_epoch) return false;   // algum flag de modo mudou desde que a linha foi gravada
-    if (h.ti < 0) return true;
-    const TlbEntry& e = tlb[h.ti]; return e.v && e.vpn == h.vpn && e.ppn == h.ppn && e.perm == h.perm;
-  }
-  bool dline_ok(const LineHint& h) const { const auto& l = dc.lines[h.set][h.way]; return l.v && l.tag == h.tag; }
-  void set_hint(LineHint* tab, int n, u32 va, u32 pa);
+  void set_hint(LineHint* tab, int n, u64 epoch, u32 va, u8* data, DCache::Line* ln);
   u32 cpu_read_slow(u32 a, int size);
   void cpu_write_slow(u32 a, int size, u32 v);
   u16 fetch16_slow(u32 a);

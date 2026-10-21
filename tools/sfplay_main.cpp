@@ -3,7 +3,7 @@
 // Controle: direcional/analógico esquerdo, A B X Y, LB RB, Start, Back = Select (layout do SDL_GameController).
 // Teclado: vai para o HID do console (setas, Enter, Esc...). F11 = tela cheia, F12 ou fechar a janela = sair.
 #include "soc.h"
-#include <SDL2/SDL.h>
+#include <SDL.h>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>

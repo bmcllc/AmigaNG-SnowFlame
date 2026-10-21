@@ -83,7 +83,7 @@ def quad(shader, p0, p1, p2, p3, n, uv_scale, lm_rect, lm=0):
     (lx0, ly0, lx1, ly1) = lm_rect
     vs = [dv(p0, (0, 0), (lx0, ly0), n), dv(p1, (uv_scale, 0), (lx1, ly0), n), dv(p2, (uv_scale, uv_scale), (lx1, ly1), n), dv(p3, (0, uv_scale), (lx0, ly1), n)]
     base = 0
-    add_surface(shader, 1, vs, [0, 1, 2, 0, 2, 3], lm)
+    add_surface(shader, 1, vs, [0, 2, 1, 0, 3, 2], lm)   # enrolamento do Q3 (horário visto da frente): o renderer descarta faces de costas
 R = 256; H = 192
 # lightmap 0: gradiente quente no chão/paredes; lightmap 1: tom azulado
 lm = []
@@ -131,7 +131,7 @@ for k in range(4):
     p1, p2 = b[k], b[(k + 1) % 4]
     base = len(vs)
     vs += [dv(apex, (0.5, 0), (0, 0), (0, 0, 1), (255, 255, 255, 255)), dv(p1, (0, 1), (0, 0), (0, 0, 1), cols[k]), dv(p2, (1, 1), (0, 0), (0, 0, 1), cols[(k + 1) % 4])]
-    idx += [base, base + 2, base + 1]
+    idx += [base, base + 1, base + 2]
 add_surface("textures/test/wall", 3, vs, idx, -1)
 
 def lump(data): return data
@@ -161,7 +161,7 @@ def md3():
     uvs = [(0, 1), (1, 1), (1, 0), (0, 0)]
     cubev = [v for f in faces for v in f]; sts = uvs * 6
     tris = []
-    for f in range(6): b0 = f * 4; tris += [(b0, b0 + 1, b0 + 2), (b0, b0 + 2, b0 + 3)]
+    for f in range(6): b0 = f * 4; tris += [(b0, b0 + 2, b0 + 1), (b0, b0 + 3, b0 + 2)]   # enrolamento do MD3 do Q3 (renderer descarta costas)
     nframes = 2; scale = [20, 28]; nv = len(cubev)
     frames = b"".join(struct.pack("<3f3f3ff16s", -sc, -sc, -sc, sc, sc, sc, 0, 0, 0, sc * 1.8, ("f%d" % i).encode()) for i, sc in enumerate(scale))
     tag = lambda name, org: struct.pack("<64s3f9f", name.encode(), *org, 1, 0, 0, 0, 1, 0, 0, 0, 1)

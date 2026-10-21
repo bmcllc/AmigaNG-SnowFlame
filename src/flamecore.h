@@ -8,6 +8,8 @@
 
 namespace sf {
 
+typedef float f4 __attribute__((vector_size(16)));   // 4 floats por instrução SIMD do host: cada lane faz exatamente a conta escalar (sem FMA)
+
 class FlameCore : public Device {
  public:
   explicit FlameCore(Bus& b);
@@ -36,7 +38,10 @@ class FlameCore : public Device {
     u32 sfunc = 6, sref = 0, smask = 0xFF, sfail = 0, zfail = 0, zpass = 0;
     Tex tex[2]; u32 texenv[2] = {0, 0}; float uvscale[2] = {1, 1}; u32 pal[2][256] = {{0}};   // paletas (CI4/CI8) por unidade
   };
-  struct Tri { Vtx v[3]; int state; i32 x[3], y[3]; i64 area; float lod[2]; int minx, miny, maxx, maxy; };
+  // Amostrador de uma unidade de textura, resolvido uma vez por triângulo (nível de mip, base, dimensões)
+  struct TexU { const u8* base = nullptr; int w = 1, h = 1; float wf = 1, hf = 1, uvs = 1; };
+  // Atributos dos 3 vértices em vetores (cor rgba, uv/uv1, rhw, fog) para interpolar os quatro canais de uma vez
+  struct Tri { Vtx v[3]; int state; i32 x[3], y[3]; i64 area; double inv; float lod[2]; int minx, miny, maxx, maxy; f4 col[3], uv[3], rhwv; float fog[3]; TexU tu[2]; };
   struct Fb { u32 addr = 0, pitch = 0; int w = 0, h = 0; } rt;
   struct ClearSt { u32 argb = 0; float depth = 1.0f; u32 flags = 0; } clr;
 
@@ -60,9 +65,10 @@ class FlameCore : public Device {
     u32 tcol[abi::TILE * abi::TILE]; float tz[abi::TILE * abi::TILE]; u8 tst[abi::TILE * abi::TILE]; int tvis[abi::TILE * abi::TILE];
     int tox = 0, toy = 0; Stats st;
   };
-  u32 shade(TileCtx& c, const Tri& t, float l0, float l1, float l2) const;
-  void sample(TileCtx& c, const RState& s, int unit, float u, float v, float lod, float out[4]) const;
-  static u32 texel(const Tex& t, const u32* pal, int level, int x, int y);
+  u32 shade(TileCtx& c, const Tri& t, const RState& s, float l0, float l1, float l2) const;
+  f4 sample(TileCtx& c, const RState& s, const TexU& q, int unit, float u, float v) const;
+  static u32 texel(const Tex& t, const TexU& q, const u32* pal, int x, int y);
+  template <class F> static void raster(const Tri& t, int x0, int x1, int y0, int y1, F&& fn);
   void render_tile(TileCtx& c, int tx, int ty, const std::vector<u32>& bin) const;
   void imm_tri(TileCtx& c, const Tri& t) const;
   bool rt_is_texture() const;

@@ -7,7 +7,7 @@ static int rt_cur; static unsigned frame_clear = 0xFF000000u; static int have_3d
 int sfr_frame_count;
 #define CMD_WORDS 262144
 
-float SFR_Time(void) { static unsigned long long t0; extern unsigned long long sf_time_ns(void); unsigned long long n = sf_time_ns(); if (!t0) t0 = n; return (float)((n - t0) / 1000000ull) * 0.001f; }
+float SFR_Time(void) { static unsigned long long t0; extern unsigned long long sf_time_ns(void); unsigned long long n = sf_time_ns(); if (!t0) t0 = n; return (float)((double)(n - t0) * 1e-9); }
 
 static void *raw_vbuf, *raw_cmdbuf;                                          /* alocados uma vez: o renderer é reiniciado a cada mapa (Shutdown + BeginRegistration) */
 void SFR_BackendInit(void) {
@@ -22,15 +22,20 @@ void SFR_BackendInit(void) {
 }
 void SFR_BackendShutdown(void) { }
 
+int sfr_allow_cull, sfr_cull_disable;   /* sfr_cull_disable: só para comparar imagens com e sem descarte */
+static void view_derive(void) {
+  sfr_view.fx = (sfr_view.w * 0.5f) / sfr_view.tx; sfr_view.fy = (sfr_view.h * 0.5f) / sfr_view.ty;
+  sfr_view.cx0 = sfr_view.x + sfr_view.w * 0.5f; sfr_view.cy0 = sfr_view.y + sfr_view.h * 0.5f;
+}
 void SFR_SetView(const refdef_t *fd) {
   int i, j; float tx, ty;
   VectorCopy(fd->vieworg, sfr_view.org);
   for (i = 0; i < 3; i++) for (j = 0; j < 3; j++) sfr_view.axis[i][j] = fd->viewaxis[i][j];
   sfr_view.fovx = fd->fov_x; sfr_view.fovy = fd->fov_y;
   sfr_view.x = fd->x; sfr_view.w = fd->width; sfr_view.h = fd->height; sfr_view.y = SFR_H - (fd->y + fd->height);
-  sfr_view.znear = 8.0f; sfr_view.zfar = 16384.0f;
+  sfr_view.znear = 8.0f; sfr_view.zfar = 16384.0f; sfr_view.depthk = sfr_view.zfar / (sfr_view.zfar - sfr_view.znear);
   tx = tanf(fd->fov_x * (float)M_PI / 360.0f); ty = tanf(fd->fov_y * (float)M_PI / 360.0f);
-  (void)tx; (void)ty;
+  sfr_view.tx = tx; sfr_view.ty = ty; view_derive();
 }
 
 void SFR_BeginFrame(void) { nverts = 0; npackets = 0; scene_first_packet = 0; have_3d = 0; frame_clear = 0xFF000000u; overflow_warned = 0; sfr_2d = 1; }
@@ -49,25 +54,25 @@ static cv_t clipbuf_a[12], clipbuf_b[12];
 
 static int clip_plane(const cv_t *in, int n, cv_t *out, float ax, float ay, float az, float d) {   /* mantém pontos com ax*x+ay*y+az*z >= d */
   int i, m = 0;
+  const cv_t *a = &in[n - 1]; float da = ax * a->x + ay * a->y + az * a->z - d;
   for (i = 0; i < n; i++) {
-    const cv_t *a = &in[i], *b = &in[(i + 1) % n];
-    float da = ax * a->x + ay * a->y + az * a->z - d, db = ax * b->x + ay * b->y + az * b->z - d;
-    if (da >= 0) out[m++] = *a;
-    if ((da >= 0) != (db >= 0)) {
+    const cv_t *b = &in[i]; float db = ax * b->x + ay * b->y + az * b->z - d;
+    if ((da >= 0) != (db >= 0)) {                                    /* a aresta a->b cruza o plano */
       float t = da / (da - db); cv_t *o = &out[m++];
       o->x = a->x + (b->x - a->x) * t; o->y = a->y + (b->y - a->y) * t; o->z = a->z + (b->z - a->z) * t; o->u = a->u + (b->u - a->u) * t; o->v = a->v + (b->v - a->v) * t;
       o->u1 = a->u1 + (b->u1 - a->u1) * t; o->v1 = a->v1 + (b->v1 - a->v1) * t; o->r = a->r + (b->r - a->r) * t; o->g = a->g + (b->g - a->g) * t; o->b = a->b + (b->b - a->b) * t; o->a = a->a + (b->a - a->a) * t;
     }
+    if (db >= 0) out[m++] = *b;
     if (m > 10) break;
+    a = b; da = db;
   }
   return m;
 }
-
 static void put_vertex(const cv_t *c, float cx0, float cy0, float fx, float fy) {
   unsigned *p; float rhw = 1.0f / c->z, depth;
   union { float f; unsigned u; } cvt;
   if (nverts >= SFR_MAX_VERTS) return;
-  depth = (sfr_view.zfar / (sfr_view.zfar - sfr_view.znear)) * (1.0f - sfr_view.znear * rhw);
+  depth = sfr_view.depthk * (1.0f - sfr_view.znear * rhw);
   if (depth < 0) depth = 0; if (depth > 1) depth = 1;
   p = vbuf + nverts * 12;
 #define PF(i, v) do { cvt.f = (v); p[i] = cvt.u; } while (0)
@@ -78,19 +83,21 @@ static void put_vertex(const cv_t *c, float cx0, float cy0, float fx, float fy) 
 }
 
 static void emit_poly(cv_t *poly, int n) {
-  float fx, fy, cx0, cy0, tx, ty; int i; float gb = 1.4f;
-  cv_t *src = poly, *dst = clipbuf_b; int allin = 1;
-  tx = tanf(sfr_view.fovx * (float)M_PI / 360.0f); ty = tanf(sfr_view.fovy * (float)M_PI / 360.0f);
-  fx = (sfr_view.w * 0.5f) / tx; fy = (sfr_view.h * 0.5f) / ty; cx0 = sfr_view.x + sfr_view.w * 0.5f; cy0 = sfr_view.y + sfr_view.h * 0.5f;
-  for (i = 0; i < n; i++) {
-    if (poly[i].z < sfr_view.znear || poly[i].x + poly[i].z * tx * gb < 0 || poly[i].z * tx * gb - poly[i].x < 0 || poly[i].y + poly[i].z * ty * gb < 0 || poly[i].z * ty * gb - poly[i].y < 0) { allin = 0; break; }
+  const float gb = 1.4f, tx = sfr_view.tx, ty = sfr_view.ty, txg = tx * gb, tyg = ty * gb, zn = sfr_view.znear;
+  const float fx = sfr_view.fx, fy = sfr_view.fy, cx0 = sfr_view.cx0, cy0 = sfr_view.cy0;
+  cv_t *src = poly, *dst = clipbuf_b; unsigned orall = 0, andall = 31u; int i;
+  for (i = 0; i < n; i++) {                                           /* códigos de saída: 1 near, 2 +x, 4 -x, 8 +y, 16 -y (faixa de guarda 1,4x) */
+    const float x = poly[i].x, y = poly[i].y, z = poly[i].z, ztx = z * txg, zty = z * tyg;
+    unsigned o = (z < zn ? 1u : 0u) | (x + ztx < 0 ? 2u : 0u) | (ztx - x < 0 ? 4u : 0u) | (y + zty < 0 ? 8u : 0u) | (zty - y < 0 ? 16u : 0u);
+    orall |= o; andall &= o;
   }
-  if (!allin) {
-    n = clip_plane(src, n, dst, 0, 0, 1, sfr_view.znear); if (n < 3) return; src = dst; dst = (src == clipbuf_a) ? clipbuf_b : clipbuf_a;
-    n = clip_plane(src, n, dst, 1, 0, tx * gb, 0); if (n < 3) return; src = dst; dst = (src == clipbuf_a) ? clipbuf_b : clipbuf_a;
-    n = clip_plane(src, n, dst, -1, 0, tx * gb, 0); if (n < 3) return; src = dst; dst = (src == clipbuf_a) ? clipbuf_b : clipbuf_a;
-    n = clip_plane(src, n, dst, 0, 1, ty * gb, 0); if (n < 3) return; src = dst; dst = (src == clipbuf_a) ? clipbuf_b : clipbuf_a;
-    n = clip_plane(src, n, dst, 0, -1, ty * gb, 0); if (n < 3) return; src = dst;
+  if (andall) return;                                                 /* todos fora do mesmo plano: nada a desenhar */
+  if (orall) {                                                        /* só recorta contra os planos que algum vértice viola */
+    if (orall & 1u)  { n = clip_plane(src, n, dst, 0, 0, 1, zn);        if (n < 3) return; src = dst; dst = (src == clipbuf_a) ? clipbuf_b : clipbuf_a; }
+    if (orall & 2u)  { n = clip_plane(src, n, dst, 1, 0, txg, 0);       if (n < 3) return; src = dst; dst = (src == clipbuf_a) ? clipbuf_b : clipbuf_a; }
+    if (orall & 4u)  { n = clip_plane(src, n, dst, -1, 0, txg, 0);      if (n < 3) return; src = dst; dst = (src == clipbuf_a) ? clipbuf_b : clipbuf_a; }
+    if (orall & 8u)  { n = clip_plane(src, n, dst, 0, 1, tyg, 0);       if (n < 3) return; src = dst; dst = (src == clipbuf_a) ? clipbuf_b : clipbuf_a; }
+    if (orall & 16u) { n = clip_plane(src, n, dst, 0, -1, tyg, 0);      if (n < 3) return; src = dst; }
   }
   if (nverts + (n - 2) * 3 > SFR_MAX_VERTS) { if (!overflow_warned) { ri.Printf(PRINT_WARNING, "SFR: buffer de vértices cheio\n"); overflow_warned = 1; } return; }
   for (i = 1; i + 1 < n; i++) { put_vertex(&src[0], cx0, cy0, fx, fy); put_vertex(&src[i], cx0, cy0, fx, fy); put_vertex(&src[i + 1], cx0, cy0, fx, fy); }
@@ -110,14 +117,19 @@ static sfpacket_t *packet_for(int flags, int src, int dst, const sfimg_t *t0, co
 static void stage_uv(const sfstage_t *st, float t, float *u, float *v) {
   if (!st->has_tcmod) return;
   { float uu = *u * st->scale[0], vv = *v * st->scale[1];
-    if (st->rotate != 0) { float a = st->rotate * t * (float)M_PI / 180.0f, s = sinf(a), c = cosf(a), du = uu - 0.5f, dv = vv - 0.5f; uu = du * c - dv * s + 0.5f; vv = du * s + dv * c + 0.5f; }
+    if (st->rotate != 0) { static float la = 1e30f, ls, lc; float a = st->rotate * t * (float)M_PI / 180.0f, s, c, du, dv; if (a != la) { la = a; ls = sinf(a); lc = cosf(a); } s = ls; c = lc; du = uu - 0.5f; dv = vv - 0.5f; uu = du * c - dv * s + 0.5f; vv = du * s + dv * c + 0.5f; }
     *u = uu + st->scroll[0] * t; *v = vv + st->scroll[1] * t; }
 }
 
 /* desenha triângulos de um shader: pos em mundo (ou já em câmera se cam_space), st/lm/col por vértice */
 static sfv_t *scratch; static int scratch_cap;
+#ifndef SFR_CULL_SIGN
+#define SFR_CULL_SIGN 1.0f
+#endif
 void SFR_DrawShaderTris(shader_t *sh, int nv, const float (*pos)[3], const float (*st)[2], const float (*lm)[2], const byte (*col)[4], int nidx, const int *idx, sfimg_t *lm_img, const byte ent_rgba[4]) {
   int pass, i, t, used_lm = 0; float time = SFR_Time();
+  const int cull_on = sfr_allow_cull && !sfr_cull_disable && !sfr_2d && sh->cull != 2;   /* o chamador liga sfr_allow_cull só para esta chamada */
+  sfr_allow_cull = 0;
   if (sh->nodraw || sh->sky || nv < 3 || nidx < 3) return;
   if (nv > scratch_cap) { free(scratch); scratch_cap = nv + 256; scratch = malloc(sizeof(sfv_t) * (size_t)scratch_cap); }
   for (i = 0; i < nv; i++) {                                         /* mundo -> câmera */
@@ -138,6 +150,12 @@ void SFR_DrawShaderTris(shader_t *sh, int nv, const float (*pos)[3], const float
     { sfpacket_t *pk = packet_for(flags, src, dst, t0, t1, sfr_2d ? 0 : sh->sort); if (!pk) return;
       for (t = 0; t + 2 < nidx; t += 3) {
         cv_t poly[3]; int k, before = nverts;
+        if (cull_on) {                                               /* descarta faces de costas (shader->cull: 0 = só frente, 1 = só costas) */
+          const sfv_t *p0 = &scratch[idx[t]], *p1 = &scratch[idx[t + 1]], *p2 = &scratch[idx[t + 2]];
+          float ax = p1->x - p0->x, ay = p1->y - p0->y, az = p1->z - p0->z, bx = p2->x - p0->x, by = p2->y - p0->y, bz = p2->z - p0->z;
+          float d = (ay * bz - az * by) * p0->x + (az * bx - ax * bz) * p0->y + (ax * by - ay * bx) * p0->z;
+          if (SFR_CULL_SIGN * (sh->cull ? -d : d) > 0) continue;
+        }
         for (k = 0; k < 3; k++) {
           int vi = idx[t + k]; cv_t *c = &poly[k]; float u = st[vi][0], v = st[vi][1];
           c->x = scratch[vi].x; c->y = scratch[vi].y; c->z = scratch[vi].z;
@@ -168,8 +186,8 @@ void SFR_Draw2D(float x, float y, float w, float h, float s1, float t1, float s2
   static const int idx[6] = { 0, 1, 2, 0, 2, 3 }; float pos[4][3], st[4][2]; byte col[4][4]; int i, saved = sfr_2d; sfview_t sv = sfr_view; float c[4];
   if (rgba) { for (i = 0; i < 4; i++) c[i] = rgba[i]; } else { for (i = 0; i < 4; i++) c[i] = sfr_color2d[i]; }
   /* câmera "ortográfica": vista de 90 graus olhando para +z a z = 1; mapeamos pixels para x,y de câmera nessa distância */
-  sfr_view.fovx = 90.0f; sfr_view.fovy = 90.0f; sfr_view.x = 0; sfr_view.y = 0; sfr_view.w = SFR_W; sfr_view.h = SFR_H;
-  sfr_view.org[0] = sfr_view.org[1] = sfr_view.org[2] = 0; { int a, b; for (a = 0; a < 3; a++) for (b = 0; b < 3; b++) sfr_view.axis[a][b] = (a == b); }
+  sfr_view.fovx = 90.0f; sfr_view.fovy = 90.0f; { static float t90; if (!t90) t90 = tanf(90.0f * (float)M_PI / 360.0f); sfr_view.tx = sfr_view.ty = t90; } sfr_view.x = 0; sfr_view.y = 0; sfr_view.w = SFR_W; sfr_view.h = SFR_H;
+  view_derive(); sfr_view.org[0] = sfr_view.org[1] = sfr_view.org[2] = 0; { int a, b; for (a = 0; a < 3; a++) for (b = 0; b < 3; b++) sfr_view.axis[a][b] = (a == b); }
   /* axis: forward = X, left = Y, up = Z => câmera x = -Y(left), y = Z(up), z = X(forward) */
   { float X[4] = { x, x + w, x + w, x }, Y[4] = { y, y, y + h, y + h };
     float us[4] = { s1, s2, s2, s1 }, vs[4] = { t1, t1, t2, t2 };

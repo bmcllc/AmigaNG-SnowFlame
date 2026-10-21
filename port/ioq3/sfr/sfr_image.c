@@ -79,11 +79,17 @@ sfimg_t *SFR_CreateImage(const char *name, const byte *rgba, int w, int h, int m
   return im;
 }
 
-/* lightmap do BSP: 128x128 RGB; o x2 compensa o "overbright" do Q3 (sem hardware de gama) */
+/* Iluminação do mapa como no Q3: mapOverBrightBits 2 (os valores gravados são 1/4 do brilho final: <<1 na carga e outro x2 pelo hardware
+   de gama). Sem hardware de gama, tudo vira um deslocamento só, com o grampo que preserva o matiz (R_ColorShiftLightingBytes). */
+void SFR_ColorShift(byte *c, int shift) {
+  int r = c[0] << shift, g = c[1] << shift, b = c[2] << shift;
+  if ((r | g | b) > 255) { int m = r > g ? r : g; if (b > m) m = b; r = r * 255 / m; g = g * 255 / m; b = b * 255 / m; }
+  c[0] = (byte)r; c[1] = (byte)g; c[2] = (byte)b;
+}
 sfimg_t *SFR_CreateLightmap(int index, const byte *rgb) {
   byte *tmp = malloc(128 * 128 * 4); char nm[32]; int i; sfimg_t *im;
   if (!tmp) return sfr_whiteimage;
-  for (i = 0; i < 128 * 128; i++) { int c; for (c = 0; c < 3; c++) { int v = rgb[i * 3 + c] * 2; tmp[i * 4 + c] = (byte)(v > 255 ? 255 : v); } tmp[i * 4 + 3] = 255; }
+  for (i = 0; i < 128 * 128; i++) { tmp[i * 4] = rgb[i * 3]; tmp[i * 4 + 1] = rgb[i * 3 + 1]; tmp[i * 4 + 2] = rgb[i * 3 + 2]; SFR_ColorShift(tmp + i * 4, SFR_OVERBRIGHT_SHIFT); tmp[i * 4 + 3] = 255; }
   Com_sprintf(nm, sizeof nm, "*lightmap%d", index);
   im = SFR_CreateImage(nm, tmp, 128, 128, 0, 1); free(tmp); return im;
 }

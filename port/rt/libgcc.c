@@ -17,6 +17,12 @@ u64 __udivmoddi4(u64 n, u64 d, u64 *rem) {
   u64 q = 0, r = 0; int i;
   if (d == 0) { if (rem) *rem = 0; return 0; }
   if ((n >> 32) == 0 && (d >> 32) == 0) { u32 nn = (u32)n, dd = (u32)d; if (rem) *rem = nn % dd; return nn / dd; }
+  if ((d >> 32) == 0) {                                            /* divisor de 32 bits: parte alta por divisão nativa, parte baixa em 32 passos de 32 bits */
+    u32 dd = (u32)d, nl = (u32)n, qh = (u32)(n >> 32) / dd, r32 = (u32)(n >> 32) % dd, ql = 0;
+    for (i = 31; i >= 0; i--) { u32 carry = r32 >> 31; r32 = (r32 << 1) | (nl >> 31); nl <<= 1; if (carry || r32 >= dd) { r32 -= dd; ql |= 1u << i; } }
+    if (rem) *rem = r32;
+    return ((u64)qh << 32) | ql;
+  }
   for (i = 63; i >= 0; i--) { r = (r << 1) | ((n >> i) & 1); if (r >= d) { r -= d; q |= (u64)1 << i; } }
   if (rem) *rem = r;
   return q;
@@ -31,15 +37,16 @@ i64 __ashrdi3(i64 v, int s) { i32 hi = (i32)((u64)v >> 32); u32 lo = (u32)v; if 
 int __cmpdi2(i64 a, i64 b) { return a < b ? 0 : a == b ? 1 : 2; }
 int __ucmpdi2(u64 a, u64 b) { return a < b ? 0 : a == b ? 1 : 2; }
 
-double __floatundidf(u64 v) { return (double)(u32)(v >> 32) * 4294967296.0 + (double)(u32)v; }
-double __floatdidf(i64 v) { return v < 0 ? -__floatundidf(-(u64)v) : __floatundidf((u64)v); }
+double __floatundidf(u64 v) { if (!(v >> 32)) return (double)(u32)v; return (double)(u32)(v >> 32) * 4294967296.0 + (double)(u32)v; }
+double __floatdidf(i64 v) { if (v >= -2147483648LL && v <= 2147483647LL) return (double)(i32)v; return v < 0 ? -__floatundidf(-(u64)v) : __floatundidf((u64)v); }
 float __floatundisf(u64 v) { return (float)__floatundidf(v); }
 float __floatdisf(i64 v) { return (float)__floatdidf(v); }
 u64 __fixunsdfdi(double d) {
   if (d <= 0) return 0;
+  if (d < 2147483648.0) return (u32)(i32)d;
   if (d >= 18446744073709551616.0) return ~(u64)0;
   { double hi = d / 4294967296.0; u32 h = (u32)hi; double lo = d - (double)h * 4294967296.0; return ((u64)h << 32) | (u32)lo; }
 }
-i64 __fixdfdi(double d) { return d < 0 ? -(i64)__fixunsdfdi(-d) : (i64)__fixunsdfdi(d); }
+i64 __fixdfdi(double d) { if (d > -2147483648.0 && d < 2147483648.0) return (i32)d; return d < 0 ? -(i64)__fixunsdfdi(-d) : (i64)__fixunsdfdi(d); }
 i64 __fixsfdi(float f) { return __fixdfdi((double)f); }
 u64 __fixunssfdi(float f) { return __fixunsdfdi((double)f); }

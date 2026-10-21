@@ -13,7 +13,75 @@
 #define BR(o) (*(volatile unsigned *)(0xF0000000u + (o)))
 #define SRAM ((volatile char *)0x30000000u)
 
+/* ------------------------------ tela de carregamento ------------------------------ */
+/* O motor passa mais de um minuto simulado carregando as VMs e o mapa sem desenhar nada: uma faixa na camada de vídeo 1 (acima da
+   camada 0 do renderer) mostra o título, a última mensagem do console e uma barra de progresso aproximada. Usa a fonte do sistema
+   do DVD (sys/font.raw, atlas A8 16x16 de ASCII, e sys/font.adv); sem ela, não há faixa. Termina em "entered the game" (ou ao fim da
+   inicialização, se a linha de comando não pede mapa). */
+#define VIDR(o) (*(volatile unsigned *)(0xF0070000u + (o)))
+#define SPL_W 640
+#define SPL_H 96
+static unsigned spl_buf[SPL_W * SPL_H] __attribute__((aligned(16)));
+static unsigned char *spl_font, spl_adv[128]; static int spl_on, spl_wait_map, spl_pct;
+static void spl_flush(void) { BR(0x24) = (unsigned)spl_buf; BR(0x28) = sizeof spl_buf; BR(0x20) = 4; }
+static void spl_text(int x, int y, const char *t, int scale, unsigned rgb, int maxw) {
+  for (; *t; t++) {
+    int c = (unsigned char)*t & 127, cx = (c % 16) * 16, cy = (c / 16) * 16, w = (c == 32 ? 4 : spl_adv[c]) + 1, px, py;
+    if (x + w * scale > maxw) break;
+    for (py = 0; py < 16 * scale; py++) for (px = 0; px < 16 * scale; px++) {
+      unsigned a = spl_font[(cy + py / scale) * 256 + cx + px / scale], *d; int X = x + px - (16 - w) * scale / 2, Y = y + py;
+      if (!a || X < 0 || X >= SPL_W || Y < 0 || Y >= SPL_H) continue;
+      d = &spl_buf[Y * SPL_W + X];
+      { unsigned r = (((*d >> 16) & 255) * (255 - a) + ((rgb >> 16) & 255) * a) / 255, g = (((*d >> 8) & 255) * (255 - a) + ((rgb >> 8) & 255) * a) / 255, b = ((*d & 255) * (255 - a) + (rgb & 255) * a) / 255; *d = 0xFF000000u | r << 16 | g << 8 | b; }
+    }
+    x += w * scale;
+  }
+}
+static void spl_draw(const char *msg, unsigned color) {
+  int i, x, y, bar = spl_pct * (SPL_W - 80) / 100;
+  for (i = 0; i < SPL_W * SPL_H; i++) spl_buf[i] = 0xE0101822u;                                   /* fundo azul-grafite, quase opaco */
+  spl_text(40, 6, "OPENARENA", 2, 0xFFB000, SPL_W);
+  spl_text(40, 46, msg, 1, color, SPL_W - 40);
+  for (y = 74; y < 82; y++) for (x = 40; x < SPL_W - 40; x++) spl_buf[y * SPL_W + x] = (x - 40 < bar) ? 0xFFFF8A00u : 0xFF2A3440u;
+  spl_flush();
+}
+static void spl_start(void) {
+  FILE *f = fopen("sys/font.raw", "rb"), *g;
+  if (!f) return;
+  spl_font = malloc(32768); g = fopen("sys/font.adv", "rb");
+  if (!spl_font || !g || fread(spl_font, 1, 32768, f) != 32768 || fread(spl_adv, 1, 128, g) != 128) { if (g) fclose(g); fclose(f); free(spl_font); spl_font = NULL; return; }
+  fclose(f); fclose(g);
+  VIDR(0x00) = 2;                                                                                  /* VMODE_480P */
+  VIDR(0x40 + 0x40 * 1 + 0x00) = (unsigned)spl_buf; VIDR(0x40 + 0x40 * 1 + 0x04) = SPL_W * 4; VIDR(0x40 + 0x40 * 1 + 0x20) = SPL_W | (SPL_H << 16);
+  VIDR(0x40 + 0x40 * 1 + 0x10) = 255; spl_draw("INICIANDO...", 0xE0E8F0); VIDR(0x40 + 0x40 * 1 + 0x1C) = 1;   /* camada 1, habilitada */
+  spl_on = 1;
+}
+static void spl_end(void) { if (spl_on) { VIDR(0x40 + 0x40 * 1 + 0x1C) = 0; spl_on = 0; } }
+static void spl_msg(const char *msg) {
+  static const struct { const char *key; int pct; } ms[] = { {"FS_Startup", 5}, {"Client Initialization", 10}, {"Initializing Renderer", 14}, {"vm/ui.qvm", 22}, {"arenas parsed", 28},
+    {"Common Initialization Complete", 32}, {"Server:", 38}, {"vm/qagame.qvm", 48}, {"Game Initialization", 56}, {"vm/cgame.qvm", 66}, {"SFR: mapa", 82}, {"CL_InitCGame", 92} };
+  char line[96]; int i, n = 0;
+  if (!spl_on) return;
+  for (i = 0; i < (int)(sizeof ms / sizeof ms[0]); i++) if (ms[i].pct > spl_pct && strstr(msg, ms[i].key)) spl_pct = ms[i].pct;
+  if (strstr(msg, "entered the game") || (!spl_wait_map && strstr(msg, "Common Initialization Complete"))) { spl_end(); return; }
+  while (*msg == '\n' || *msg == ' ' || *msg == '-' || *msg == '^') { if (*msg == '^' && msg[1]) msg += 2; else msg++; }          /* ignora quebras e cores do Q3 */
+  for (; *msg && *msg != '\n' && n < 90; msg++) if ((unsigned char)*msg >= 32 && (unsigned char)*msg < 127) line[n++] = *msg;
+  line[n] = 0;
+  if (n) spl_draw(line, 0xE0E8F0);
+}
+
 /* ------------------------------ sistema ------------------------------ */
+/* Sai do jogo: se o disco tem o menu (boot/menu.bin), pede ao IPL que volte a ele (após 'wait_ms', para a mensagem de erro ficar na
+   tela); sem menu (sf100_run, testes) encerra com o código dado. */
+static void sf_leave(int code, int wait_ms) {
+  FILE *f = fopen("boot/menu.bin", "rb");
+  if (!f) exit(code);
+  fclose(f);
+  if (wait_ms > 0) BR(0x0F4) = (unsigned)wait_ms * 1000u;
+  { static const char path[] = "boot/menu.bin"; int i; for (i = 0; path[i]; i++) SRAM[i] = path[i]; SRAM[i] = 0; }
+  BR(0x0F0) = 1;                                              /* BR_SYS_CTRL: reinicia e carrega o programa de SRAM_BASE */
+  for (;;) BR(0x0F4) = 1000000u;
+}
 void Sys_Init(void) { Cvar_Set("arch", "m68k-coldfire"); Cvar_Set("username", "player"); }
 void *QDECL Sys_LoadGameDll(const char *name, vmMainProc *entryPoint, intptr_t(QDECL *systemcalls)(intptr_t, ...)) { (void)name; (void)entryPoint; (void)systemcalls; return NULL; }   /* sem dlopen: o jogo roda como QVM */
 void Sys_UnloadDll(void *h) { (void)h; }
@@ -23,11 +91,12 @@ void QDECL Sys_Error(const char *error, ...) {
   va_list ap; char msg[1024];
   va_start(ap, error); Q_vsnprintf(msg, sizeof msg, error, ap); va_end(ap);
   printf("\n*** Sys_Error: %s\n", msg);
-  exit(1);
+  if (spl_on) { spl_pct = spl_pct ? spl_pct : 1; spl_draw(msg, 0xFF6060); }
+  sf_leave(1, 5000);
 }
-void Sys_Quit(void) { printf("[ioq3] Sys_Quit\n"); exit(0); }
+void Sys_Quit(void) { printf("[ioq3] Sys_Quit\n"); sf_leave(0, 0); }
 char *Sys_GetClipboardData(void) { return NULL; }
-void Sys_Print(const char *msg) { fputs(msg, stdout); }
+void Sys_Print(const char *msg) { fputs(msg, stdout); spl_msg(msg); }
 int Sys_Milliseconds(void) { return (int)(sf_time_ns() / 1000000ull); }
 qboolean Sys_RandomBytes(byte *s, int len) { unsigned long long t = sf_time_ns() * 6364136223846793005ull + 1442695040888963407ull; int i; for (i = 0; i < len; i++) { t = t * 6364136223846793005ull + 1; s[i] = (byte)(t >> 33); } return qtrue; }
 void Sys_DisplaySystemConsole(qboolean show) { (void)show; }
@@ -203,8 +272,11 @@ qboolean S_AL_Init(soundInterface_t *si) { (void)si; return qfalse; }
 int main(void) {
   /* a linha de comando do motor vem do host em SRAM_BASE+0x200 (NUL-terminada); sem ela, usa o padrão */
   static char cmd[1024];
-  const char *dflt = "+set dedicated 1 +set com_hunkMegs 16 +set com_zoneMegs 12 +set com_soundMegs 2 +set com_maxfps 60 +set fs_basepath .";
+  /* padrão: o jogo (OpenArena, mapa oa_dm1 do pk3 montado por tools/mkoa.py) em tela cheia sobre o FlameCore, sem bots (não há .aas) */
+  const char *dflt = "+set com_hunkMegs 24 +set com_zoneMegs 8 +set com_soundMegs 2 +set com_maxfps 60 +set fs_basepath . +set sv_pure 0 +set bot_enable 0 +set s_initsound 0 +set model sarge +set headmodel sarge +devmap oa_dm1";
   if (SRAM[0x200]) { int i; for (i = 0; i < 1023 && SRAM[0x200 + i]; i++) cmd[i] = SRAM[0x200 + i]; cmd[i] = 0; } else strcpy(cmd, dflt);
+  spl_wait_map = strstr(cmd, "map ") != NULL;
+  spl_start();
   Com_Init(cmd);
   NET_Init();
   for (;;) { IN_Frame(); Com_Frame(); }

@@ -76,18 +76,13 @@ static int bcos(int a) { return bsin(a + 256); }
 static int mulfx(int a, int b) { return (a >> 16) * b + (((a & 0xFFFF) * (b >> 8)) >> 8); }
 static int ease(int cur, int target, int div) { int d = target - cur; return cur + d / div + (d > 0 ? 1 : d < 0 ? -1 : 0); }
 static void m_ident(int *m) { int i; for (i = 0; i < 16; i++) m[i] = (i % 5) == 0 ? 65536 : 0; }
-static void m_mul(int *r, const int *a, const int *b) {
-  int t[16], i, j, k;
-  for (i = 0; i < 4; i++) for (j = 0; j < 4; j++) { int s = 0; for (k = 0; k < 4; k++) s += mulfx(a[i * 4 + k], b[k * 4 + j]); t[i * 4 + j] = s; }
-  for (i = 0; i < 16; i++) r[i] = t[i];
-}
-static void m_rot(int *m, int axis, int a) {     /* multiplica m por uma rotação em X (0), Y (1) ou Z (2) */
-  int r[16], c = bcos(a), s = bsin(a);
-  m_ident(r);
-  if (axis == 0) { r[5] = c; r[6] = -s; r[9] = s; r[10] = c; }
-  else if (axis == 1) { r[0] = c; r[2] = s; r[8] = -s; r[10] = c; }
-  else { r[0] = c; r[1] = -s; r[4] = s; r[5] = c; }
-  m_mul(m, m, r);
+static void m_rot(int *m, int axis, int a) {     /* multiplica m por uma rotação em X (0), Y (1) ou Z (2): só as duas colunas afetadas mudam */
+  int c = bcos(a), s = bsin(a), i, p = axis == 0 ? 1 : 0, q = axis == 2 ? 1 : 2;
+  for (i = 0; i < 16; i += 4) {
+    int mp = m[i + p], mq = m[i + q];
+    if (axis == 1) { m[i + p] = mulfx(mp, c) + mulfx(mq, -s); m[i + q] = mulfx(mp, s) + mulfx(mq, c); }
+    else { m[i + p] = mulfx(mp, c) + mulfx(mq, s); m[i + q] = mulfx(mp, -s) + mulfx(mq, c); }
+  }
 }
 static void m_scale(int *m, int sx, int sy, int sz) { int i; for (i = 0; i < 4; i++) { m[i * 4] = mulfx(m[i * 4], sx); m[i * 4 + 1] = mulfx(m[i * 4 + 1], sy); m[i * 4 + 2] = mulfx(m[i * 4 + 2], sz); } }
 
@@ -190,16 +185,23 @@ static void mc_boot_counter(void) {
 /* ------------------------------ SnowVector A: emblema 3D ------------------------------ */
 static void kput(unsigned *k, int slot, int x, int y, int z, int w) { k += slot * 4; k[0] = gx_f32_fx(x); k[1] = gx_f32_fx(y); k[2] = gx_f32_fx(z); k[3] = gx_f32_fx(w); }
 /* bloco de constantes do geometry.vx para a matriz de modelo m (16.16) e o material; luz fixa no espaço da câmera */
+static int geo_static_done;
 static void geo_consts(int blk, const int *model, unsigned light, unsigned amb, int spec, unsigned rim, int rim_a) {
-  static const int proj[16] = { 151277, 0, 0, 0,   0, 201700, 0, 0,   0, 0, -77451, -142987,   0, 0, -65536, 0 };   /* fov 36°, 4:3, perto 1, longe 12 */
+  /* projeção: fov 36°, 4:3, perto 1, longe 12 (esparsa: só 5 termos não nulos) */
   int mv[16], mvp[16], c; unsigned *k = (unsigned *)(A_K + (unsigned)blk * 0x200);
   for (c = 0; c < 16; c++) mv[c] = model[c];
   mv[11] -= 275251;                                               /* câmera em z = +4,2 */
-  m_mul(mvp, proj, mv);
+  for (c = 0; c < 4; c++) {
+    mvp[c] = mulfx(151277, mv[c]); mvp[4 + c] = mulfx(201700, mv[4 + c]);
+    mvp[8 + c] = mulfx(-77451, mv[8 + c]) + mulfx(-142987, mv[12 + c]); mvp[12 + c] = mulfx(-65536, mv[8 + c]);
+  }
   for (c = 0; c < 4; c++) kput(k, c, mvp[c], mvp[4 + c], mvp[8 + c], mvp[12 + c]);
   for (c = 0; c < 3; c++) kput(k, 4 + c, mv[c], mv[4 + c], mv[8 + c], 0);
+  kput(k, 9, emb_x << 16, emb_y << 16, F(50), 0);
+  if (geo_static_done & (1 << blk)) return;                       /* luz, viewport e material não mudam: gravados uma vez */
+  geo_static_done |= 1 << blk;
   kput(k, 7, F(-42), F(63), F(65), 0);
-  kput(k, 8, 320 << 16, -240 << 16, F(50), 0); kput(k, 9, emb_x << 16, emb_y << 16, F(50), 0);
+  kput(k, 8, 320 << 16, -240 << 16, F(50), 0);
   kput(k, 10, 0, 0, 0, 65536);
   kput(k, 11, (int)((light >> 16) & 255) * 257, (int)((light >> 8) & 255) * 257, (int)(light & 255) * 257, 0);
   kput(k, 12, 0, 0, 0, 0);
@@ -239,10 +241,14 @@ static void emblem_submit(void) {
 }
 
 /* ------------------------------ SnowVector B: neve e brasas ------------------------------ */
+static int part_static_done;
 static void part_consts(int blk, int speed, int x0, int y0, int w, int h, int k, int amp) {
   unsigned *c = (unsigned *)(A_K + (unsigned)blk * 0x200);
-  kput(c, 0, speed, speed, speed, 0); kput(c, 1, -k, k, 0, 0); kput(c, 2, amp, 0, 0, 0);
-  kput(c, 3, w << 16, h << 16, 65536, 0); kput(c, 4, x0 << 16, y0 << 16, 0, 65536);
+  kput(c, 0, speed, speed, speed, 0); kput(c, 4, x0 << 16, y0 << 16, 0, 65536);
+  if (part_static_done & (1 << blk)) return;                      /* o resto do bloco é fixo */
+  part_static_done |= 1 << blk;
+  kput(c, 1, -k, k, 0, 0); kput(c, 2, amp, 0, 0, 0);
+  kput(c, 3, w << 16, h << 16, 65536, 0);
   kput(c, 5, 65536, 65536, 65536, 65536); kput(c, 6, 0, 0, 0, 0);
   kput(c, 7, -65536, -65536, 0, 0); kput(c, 8, 65536, -65536, 0, 0); kput(c, 9, 65536, 65536, 0, 0); kput(c, 10, -65536, 65536, 0, 0);
   kput(c, 11, 0, 0, 0, 0); kput(c, 12, 65536, 0, 0, 0); kput(c, 13, 65536, 65536, 0, 0); kput(c, 14, 0, 65536, 0, 0);
@@ -280,21 +286,31 @@ static void vpus_wait(void) {                    /* cada job de geometria dá SI
 
 /* ------------------------------ SnowCopper: céu por scanline ------------------------------ */
 static unsigned rgb_scale(int r, int g, int b, int f) { r = r * f >> 8; g = g * f >> 8; b = b * f >> 8; return 0xFF000000u | ((unsigned)imin(r, 255) << 16) | ((unsigned)imin(g, 255) << 8) | (unsigned)imin(b, 255); }
+static short sky_r[SH / 2], sky_g[SH / 2], sky_b[SH / 2]; static int sky_ready, cop_fade[2] = {-1, -1};
 static void copper_sky(unsigned list) {
-  unsigned *c = (unsigned *)list; int y, n = 0;
-  for (y = 0; y < SH; y += 2) {
-    int r, g, b, au, hz;
-    if (y < 330) { int t = y * 256 / 330; r = 2 + t * 16 / 256; g = 6 + t * 34 / 256; b = 22 + t * 76 / 256; }
-    else { int t = (y - 330) * 256 / 150; r = 18 - t * 12 / 256; g = 36 - t * 24 / 256; b = 84 - t * 52 / 256; }
-    au = (bsin(y * 5 + tick * 2) + bsin(y * 3 - tick * 3 + 400)) >> 10;                    /* aurora: -128..128 */
-    if (y > 40 && y < 240) { int env = y < 140 ? (y - 40) * 256 / 100 : (240 - y) * 256 / 100; au = imax(0, au) * env >> 8; r += au / 10; g += au * 60 / 128; b += au * 40 / 128; }
-    hz = 330 - y; if (hz < 0) hz = -hz;                                                     /* brilho do horizonte */
-    if (hz < 40) { int k = (40 - hz) * (40 - hz) / 16; r += k / 3; g += k * 2 / 3; b += k; }
-    c[n++] = COP_WAIT(y); c[n++] = 0;
-    c[n++] = COP_MOVE(VIDEO_BASE + VID_BG); c[n++] = rgb_scale(r, g, b, sky_fade);
+  unsigned *c = (unsigned *)list; int y, n = (SH / 2) * 4, li = list != A_COP, all = cop_fade[li] != sky_fade;
+  if (!sky_ready) {                                               /* degradê e horizonte: fixos, calculados uma vez */
+    sky_ready = 1;
+    for (y = 0; y < SH; y += 2) {
+      int r, g, b, hz;
+      if (y < 330) { int t = y * 256 / 330; r = 2 + t * 16 / 256; g = 6 + t * 34 / 256; b = 22 + t * 76 / 256; }
+      else { int t = (y - 330) * 256 / 150; r = 18 - t * 12 / 256; g = 36 - t * 24 / 256; b = 84 - t * 52 / 256; }
+      hz = 330 - y; if (hz < 0) hz = -hz;                                                   /* brilho do horizonte */
+      if (hz < 40) { int k = (40 - hz) * (40 - hz) / 16; r += k / 3; g += k * 2 / 3; b += k; }
+      sky_r[y / 2] = (short)r; sky_g[y / 2] = (short)g; sky_b[y / 2] = (short)b;
+    }
   }
-  c[n++] = 0; c[n++] = 0;
-  os_cache_flush(list, (unsigned)n * 4);
+  if (all) {                                                      /* estrutura da lista e cores fora da aurora: só quando o fade muda */
+    cop_fade[li] = sky_fade;
+    for (y = 0; y < SH; y += 2) { unsigned *e = c + (y / 2) * 4; e[0] = COP_WAIT(y); e[1] = 0; e[2] = COP_MOVE(VIDEO_BASE + VID_BG); e[3] = rgb_scale(sky_r[y / 2], sky_g[y / 2], sky_b[y / 2], sky_fade); }
+    c[n] = 0; c[n + 1] = 0;
+  }
+  for (y = 42; y < 240; y += 2) {                                 /* aurora: a única parte animada */
+    int au = (bsin(y * 5 + tick * 2) + bsin(y * 3 - tick * 3 + 400)) >> 10, env = y < 140 ? (y - 40) * 256 / 100 : (240 - y) * 256 / 100;
+    au = imax(0, au) * env >> 8;
+    c[(y / 2) * 4 + 3] = rgb_scale(sky_r[y / 2] + au / 10, sky_g[y / 2] + au * 60 / 128, sky_b[y / 2] + au * 40 / 128, sky_fade);
+  }
+  os_cache_flush(all ? list : list + 21 * 16, all ? (unsigned)(n + 2) * 4 : 99 * 16);
 }
 
 /* ------------------------------ SnowBlitter: HUD (barras, texto e botões como sprites) ------------------------------ */
@@ -364,6 +380,23 @@ static int pill_y(int i) { return 98 + i * 64; }
 /* halo aditivo sem textura (segmento UI_ADD): leque de 16 setores com anel no meio raio, queda ~ (1 - r)^2;
    cor por vértice é bem mais barata no FlameCore que um quad grande com filtro bilinear */
 static unsigned premul(unsigned rgb, int a) { return 0xFF000000u | (((rgb >> 16 & 255) * a / 255) << 16) | (((rgb >> 8 & 255) * a / 255) << 8) | ((rgb & 255) * a / 255); }
+static void glow(int cx, int cy, int rx, int ry, unsigned rgb, int a);
+/* halos guardados num buffer próprio: só são refeitos quando a chave (posição, tamanho, intensidade) muda */
+#define A_GLOWVB 0x018A0000
+#define GLOW_SLOT 512                                              /* vértices por entrada do cache */
+static int glow_key[3][5] = {{-1}, {-1}, {-1}}, glow_n[3];
+static void glow_cached(int slot, int cx, int cy, int rx, int ry, unsigned rgb, int a) {
+  int *k = glow_key[slot];
+  if (k[0] != cx || k[1] != cy || k[2] != rx || k[3] != ry || k[4] != a) {
+    unsigned *svb = VB, *svp = vp; int svn = vn;
+    VB = (unsigned *)(A_GLOWVB + (unsigned)slot * GLOW_SLOT * 48); vp = VB; vn = 0;
+    glow(cx, cy, rx, ry, rgb, a); glow_n[slot] = vn;
+    os_cache_flush((unsigned)VB, (unsigned)vn * 48);
+    VB = svb; vp = svp; vn = svn;
+    k[0] = cx; k[1] = cy; k[2] = rx; k[3] = ry; k[4] = a;
+  }
+  ui_ext(A_GLOWVB + (unsigned)slot * GLOW_SLOT * 48, 0, glow_n[slot], ST_BLEND, BF_ONE, BF_ONE, 0, 0, 0, 0);
+}
 static void glow(int cx, int cy, int rx, int ry, unsigned rgb, int a) {
   unsigned c0 = premul(rgb, imin(a, 255)), c1 = premul(rgb, imin(a, 255) / 4), c2 = 0xFF000000u; int k;
   if (vn + 16 * 9 > MAXV) return;
@@ -445,9 +478,8 @@ static void render(unsigned rt) {
   ui_begin();
   ui_seg(UI_ALPHA); floor_grid();
   /* halo atrás do emblema (gelo + brasa) */
-  ui_seg(UI_ADD);
   { int r = emb_s * 260 >> 16, r2 = emb_s * 130 >> 16, g = state == ST_BOOT ? imin(255, boot_t * 3) : 255;
-    glow(emb_x, emb_y, r, r, 0x2060C0, g * 120 >> 8); glow(emb_x, emb_y, r2, r2, 0xFF7020, g * 110 >> 8); }
+    glow_cached(0, emb_x, emb_y, r, r, 0x2060C0, g * 120 >> 8); glow_cached(1, emb_x, emb_y, r2, r2, 0xFF7020, g * 110 >> 8); }
   /* saídas das VPUs */
   ui_ext(A_POUT, 0, NSNOW * 6, ST_BLEND | ST_TEX0 | ST_BILINEAR, BF_SRC_ALPHA, BF_ONE, A_UIT + UI_TEX_FLAKE, 6, 6, TF_ARGB8888);
   ui_ext(A_VOUT, out_ring1, part_count[2] * 2, ST_DEPTH_TEST | ST_DEPTH_WRITE, BF_ONE, BF_ZERO, 0, 0, 0, 0);
@@ -469,9 +501,8 @@ static void render(unsigned rt) {
   /* cápsulas "gel" do menu */
   if (mf > 0) {
     int ofs = (256 - mf) * 300 / 256 + pf * 340 / 256;
-    ui_seg(UI_ADD);
-    { int y = pill_y(sel), x0 = 382 + ofs - sel_f, g = (200 + (bsin(tick * 6) >> 11)) * mf >> 8;   /* aura pulsante da seleção */
-      glow(x0 + 118, y + 28, 188, 72, 0xFF6A1A, g * 2); }
+    { int y = pill_y(sel), x0 = 382 + ofs - sel_f, g = ((200 + (bsin(tick * 6) >> 11)) * mf >> 8) & ~3;   /* aura pulsante da seleção (degraus de 4) */
+      glow_cached(2, x0 + 118, y + 28, 188, 72, 0xFF6A1A, g * 2); }
     ui_seg_tex(A_UIT + UI_TEX_PILL, 8, 6, TF_ARGB8888);
     for (i = 0; i < N_ITEMS; i++) {
       int y = pill_y(i), x0 = 382 + ofs - (i == sel ? sel_f : 0), x1 = x0 + 236, a = mf * (i == sel ? 255 : 210) >> 8;

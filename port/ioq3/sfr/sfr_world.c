@@ -39,6 +39,7 @@ static void tessellate(wsurf_t *ws, const drawVert_t *cp, int pw, int ph) {
       for (c = 0; c < 4; c++) col[c] += d->color[c] * wgt;
     }
     for (c = 0; c < 4; c++) ws->col[v][c] = (byte)(col[c] + 0.5f);
+    SFR_ColorShift(ws->col[v], SFR_OVERBRIGHT_SHIFT);
   }
   k = 0;
   for (gy = 0; gy + 1 < ny; gy++) for (gx = 0; gx + 1 < nx; gx++) { int i0 = gy * nx + gx; ws->idx[k++] = i0; ws->idx[k++] = i0 + nx; ws->idx[k++] = i0 + 1; ws->idx[k++] = i0 + 1; ws->idx[k++] = i0 + nx; ws->idx[k++] = i0 + nx + 1; }
@@ -79,7 +80,7 @@ void SFR_LoadWorld(const char *name) {
     if (type == MST_PATCH) { tessellate(ws, dv + fv, swap_int(d->patchWidth), swap_int(d->patchHeight)); }
     else if (type == MST_PLANAR || type == MST_TRIANGLE_SOUP) {
       ws->nv = nv; ws->ni = ni; ws->pos = hunk(nv * sizeof *ws->pos); ws->st = hunk(nv * sizeof *ws->st); ws->lms = hunk(nv * sizeof *ws->lms); ws->col = hunk(nv * sizeof *ws->col); ws->idx = hunk(ni * sizeof(int));
-      for (k = 0; k < nv; k++) { const drawVert_t *v = &dv[fv + k]; for (c = 0; c < 3; c++) ws->pos[k][c] = swap_float(v->xyz[c]); for (c = 0; c < 2; c++) { ws->st[k][c] = swap_float(v->st[c]); ws->lms[k][c] = swap_float(v->lightmap[c]); } for (c = 0; c < 4; c++) ws->col[k][c] = v->color[c]; }
+      for (k = 0; k < nv; k++) { const drawVert_t *v = &dv[fv + k]; for (c = 0; c < 3; c++) ws->pos[k][c] = swap_float(v->xyz[c]); for (c = 0; c < 2; c++) { ws->st[k][c] = swap_float(v->st[c]); ws->lms[k][c] = swap_float(v->lightmap[c]); } for (c = 0; c < 4; c++) ws->col[k][c] = v->color[c]; SFR_ColorShift(ws->col[k], SFR_OVERBRIGHT_SHIFT); }
       for (k = 0; k < ni; k++) ws->idx[k] = swap_int(di[fi + k]);
     } else continue;                                                 /* flares: ignorados */
     bounds(ws);
@@ -129,7 +130,7 @@ static int box_outside(const float mn[3], const float mx[3]) {
   }
   return 0;
 }
-static void draw_surface(wsurf_t *ws) { SFR_DrawShaderTris(ws->sh, ws->nv, (const float (*)[3])ws->pos, (const float (*)[2])ws->st, (const float (*)[2])ws->lms, (const byte (*)[4])ws->col, ws->ni, ws->idx, ws->lm, NULL); }
+static void draw_surface(wsurf_t *ws) { sfr_allow_cull = 1; SFR_DrawShaderTris(ws->sh, ws->nv, (const float (*)[3])ws->pos, (const float (*)[2])ws->st, (const float (*)[2])ws->lms, (const byte (*)[4])ws->col, ws->ni, ws->idx, ws->lm, NULL); }
 
 static int camera_cluster;
 static void walk(int n) {
@@ -170,7 +171,7 @@ void SFR_RenderBModel(int idx, const float org[3], const float axis[3][3]) {
     wsurf_t *ws = &surfs[first + i]; float (*tp)[3]; int k; if (!ws->nv) continue;
     tp = hunk_temp(ws->nv * 12);
     for (k = 0; k < ws->nv; k++) { float *p = ws->pos[k]; tp[k][0] = org[0] + p[0] * axis[0][0] + p[1] * axis[1][0] + p[2] * axis[2][0]; tp[k][1] = org[1] + p[0] * axis[0][1] + p[1] * axis[1][1] + p[2] * axis[2][1]; tp[k][2] = org[2] + p[0] * axis[0][2] + p[1] * axis[1][2] + p[2] * axis[2][2]; }
-    SFR_DrawShaderTris(ws->sh, ws->nv, (const float (*)[3])tp, (const float (*)[2])ws->st, (const float (*)[2])ws->lms, (const byte (*)[4])ws->col, ws->ni, ws->idx, ws->lm, NULL);
+    sfr_allow_cull = 1; SFR_DrawShaderTris(ws->sh, ws->nv, (const float (*)[3])tp, (const float (*)[2])ws->st, (const float (*)[2])ws->lms, (const byte (*)[4])ws->col, ws->ni, ws->idx, ws->lm, NULL);
     hunk_temp_free(tp);
   }
 }

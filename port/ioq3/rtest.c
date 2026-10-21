@@ -61,6 +61,12 @@ static void im_setenv(const char *n, const char *v) { (void)n; (void)v; }
 static void im_glsafe(void) { }
 static qboolean im_lowmem(void) { return qfalse; }
 
+/* RT_MAP / RT_CAM (-D no build): carrega outro mapa (ex.: um do OpenArena) e fixa a câmera {x, y, z, yaw}; padrão = o mapa sintético */
+#ifndef RT_MAP
+#define RT_MAP "maps/test.bsp"
+#define RT_CAM { {0, -230, 70, 90}, {-60, -60, 80, 219}, {60, 0, 80, 66}, {20, -200, 60, 70} }
+#endif
+
 refexport_t *GetRefAPI(int apiVersion, refimport_t *rimp);
 void sf_report(const char *what) { printf("[rtest] %s\n", what); }
 
@@ -75,12 +81,15 @@ int main(void) {
   imp.IN_Init = im_in_init; imp.IN_Shutdown = im_in_shut; imp.IN_Restart = im_in_rst; imp.ftol = im_ftol; imp.Sys_SetEnv = im_setenv; imp.Sys_GLimpSafeInit = im_glsafe; imp.Sys_GLimpInit = im_glsafe; imp.Sys_LowPhysicalMemory = im_lowmem;
   re = GetRefAPI(REF_API_VERSION, &imp); if (!re) { printf("GetRefAPI falhou\n"); return 1; }
   re->BeginRegistration(&cfg); printf("[rtest] %s %dx%d\n", cfg.renderer_string, cfg.vidWidth, cfg.vidHeight);
-  re->LoadWorld("maps/test.bsp"); bar = re->RegisterShaderNoMip("gfx/2d/bar"); cube = re->RegisterModel("models/test/cube.md3"); re->EndRegistration();
+#ifdef RT_NOCULL
+  { extern int sfr_cull_disable; sfr_cull_disable = 1; }
+#endif
+  re->LoadWorld(RT_MAP); bar = re->RegisterShaderNoMip("gfx/2d/bar"); cube = re->RegisterModel("models/test/cube.md3"); re->EndRegistration();
   { char tok[256]; int n = 0; while (re->GetEntityToken(tok, sizeof tok)) n++; printf("[rtest] tokens de entidade: %d; cubo=%d\n", n, (int)cube); }
   for (frame = 0; frame < nframes; frame++) {
     float a = 0.8f + frame * 0.35f, ca = cosf(a), sa = sinf(a);
     memset(&fd, 0, sizeof fd); fd.x = 0; fd.y = 0; fd.width = 640; fd.height = 480; fd.fov_x = 90; fd.fov_y = 2 * atanf(tanf(45 * (float)M_PI / 180) * 480.0f / 640.0f) * 180 / (float)M_PI; fd.time = frame * 100;
-    { static const float cam[4][4] = { {0, -230, 70, 90}, {-60, -60, 80, 219}, {60, 0, 80, 66}, {20, -200, 60, 70} };
+    { static const float cam[4][4] = RT_CAM;
       float yaw = cam[frame][3] * (float)M_PI / 180, f[3] = { cosf(yaw), sinf(yaw), 0 }, l[3] = { -sinf(yaw), cosf(yaw), 0 }, u[3] = { 0, 0, 1 }; int k;
       fd.vieworg[0] = cam[frame][0]; fd.vieworg[1] = cam[frame][1]; fd.vieworg[2] = cam[frame][2]; (void)a; (void)ca; (void)sa;
       for (k = 0; k < 3; k++) { fd.viewaxis[0][k] = f[k]; fd.viewaxis[1][k] = l[k]; fd.viewaxis[2][k] = u[k]; } }

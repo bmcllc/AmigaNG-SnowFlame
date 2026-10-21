@@ -39,7 +39,20 @@ class Cpu {
   void agu_set(int r) { agu_cur |= 1u << r; }
   struct Illegal {}; struct DivZero {}; struct Priv {};
   struct EA { int k; int reg; u32 addr; u32 imm; };    // k: 0 Dn, 1 An, 2 mem, 3 imediato
-  u16 fetch() { bus.cpu_super = sr & 0x2000; u16 w = bus.fetch16(pc); pc += 2; return w; }
+  // Busca de instrução: repete a última linha de 16 B da I-cache enquanto a época de busca do Bus não avança (modos, TLB, I-cache);
+  // os contadores avançam como no Bus::fetch16. Fora disso, caminho completo do Bus (que também preenche a linha para a próxima).
+  u32 fl_base = 0xFFFFFFFFu; const u8* fl_data = nullptr; u64 fl_ep = ~0ull; int fl_ti = -1;
+  __attribute__((noinline)) u16 fetch() {
+    bus.cpu_super = sr & 0x2000;
+    const u32 p = pc;
+    if (((p ^ fl_base) >> 4) == 0 && !(p & 1) && fl_ep == bus.ep.i) {
+      bus.ifetches++; bus.ihits++; if (fl_ti >= 0) bus.tlb_hits++;
+      pc = p + 2; return rbe16(fl_data + (p & 15));
+    }
+    u16 w = bus.fetch16(p); pc = p + 2;
+    fl_base = bus.ifetch_hint(p, fl_data, fl_ti, fl_ep) ? (p & ~15u) : 0xFFFFFFFFu;
+    return w;
+  }
   u32 fetch32() { u32 h = fetch(); return (h << 16) | fetch(); }
   u32 brief(u32 base);
   EA ea(int mode, int reg, int size);

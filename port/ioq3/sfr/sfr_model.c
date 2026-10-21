@@ -89,9 +89,12 @@ int SFR_LerpTag(orientation_t *tag, qhandle_t mh, int sf, int ef, float frac, co
   return 1;
 }
 
+/* normal MD3 codificada em (lat, lng) de 8 bits: seno/cosseno dos 256 ângulos por tabela (mesmos valores de sinf/cosf, calculados uma vez) */
+static float nsin[256], ncos[256]; static int ntab;
 static void decode_normal(short enc, float n[3]) {
-  float lat = ((enc >> 8) & 255) * (float)(2 * M_PI / 255), lng = (enc & 255) * (float)(2 * M_PI / 255);
-  n[0] = cosf(lat) * sinf(lng); n[1] = sinf(lat) * sinf(lng); n[2] = cosf(lng);
+  int la = (enc >> 8) & 255, lo = enc & 255;
+  if (!ntab) { int i; for (i = 0; i < 256; i++) { float a = i * (float)(2 * M_PI / 255); nsin[i] = sinf(a); ncos[i] = cosf(a); } ntab = 1; }
+  n[0] = ncos[la] * nsin[lo]; n[1] = nsin[la] * nsin[lo]; n[2] = ncos[lo];
 }
 
 void SFR_DrawEntityModel(const refEntity_t *e) {
@@ -115,7 +118,7 @@ void SFR_DrawEntityModel(const refEntity_t *e) {
         l = 0.55f + 0.45f * (wn[0] * 0.3f + wn[1] * 0.3f + wn[2] * 0.9f); if (l < 0.35f) l = 0.35f; if (l > 1) l = 1; }
       col[i][0] = col[i][1] = col[i][2] = (byte)(l * 255); col[i][3] = e->shaderRGBA[3] ? e->shaderRGBA[3] : 255;
     }
-    SFR_DrawShaderTris(sh, nv, (const float (*)[3])pos, (const float (*)[2])su->st, NULL, (const byte (*)[4])col, su->ntris * 3, su->tris, NULL, e->shaderRGBA);
+    sfr_allow_cull = 1; SFR_DrawShaderTris(sh, nv, (const float (*)[3])pos, (const float (*)[2])su->st, NULL, (const byte (*)[4])col, su->ntris * 3, su->tris, NULL, e->shaderRGBA);
     ri.Hunk_FreeTempMemory(col); ri.Hunk_FreeTempMemory(pos);
   }
 }

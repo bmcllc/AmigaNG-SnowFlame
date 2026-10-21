@@ -8,6 +8,6 @@ for f in "$H/rt/crt0.S" "$H/rt/libc.c" "$H/rt/libc2.c" "$H/rt/setjmp.S" "$H/rt/l
 for f in "${SFR[@]}"; do b "$H/ioq3/$f"; done
 for f in "${RCOMMON[@]}"; do b "$CODE/$f"; done
 for j in "${JPEG[@]}"; do b "$CODE/thirdparty/jpeg-9f/$j.c" "-w"; done
-b "$H/ioq3/rtest.c"; b "$CODE/qcommon/q_shared.c"; b "$CODE/qcommon/q_math.c"
+b "$H/ioq3/rtest.c" "$RT_DEFS"; b "$CODE/qcommon/q_shared.c"; b "$CODE/qcommon/q_math.c"
 $CC "${CFLAGS_COMMON[@]}" -nostdlib -nostartfiles -nodefaultlibs -static -Wl,--no-warn-rwx-segments -Wl,--build-id=none -Wl,--defsym,__stack_top=0x03F00000 -Wl,-Map,"${OUT%.bin}.map" -T "$H/rt/link.ld" -o "${OUT%.bin}.elf" "${objs[@]}" || exit 1
 ${OBJCOPY:-m68k-linux-gnu-objcopy} -O binary "${OUT%.bin}.elf" "$OUT"; rm -rf "$T"; echo "$OUT: $(wc -c < "$OUT") bytes"

@@ -6,13 +6,13 @@ if [ -n "$SF_M68K_CROSS" ]; then export PATH="$SF_M68K_CROSS/usr/bin:$PATH"; exp
 CC=${CC:-m68k-linux-gnu-gcc-14}
 GCCINC=$($CC -print-file-name=include)   # cabeçalhos freestanding do GCC (stddef, stdarg, stdint, float, limits); /usr/include do host fica de fora
 CODE="$IOQ3/code"
-CFLAGS_COMMON=(-mcpu=5475 -O2 -g0 -ffreestanding -nostdinc "-isystem$GCCINC" -fno-builtin-printf -fno-pic -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables -mno-pcrel
+CFLAGS_COMMON=(-mcpu=5475 -O2 -g0 -fno-strict-aliasing -ffreestanding -nostdinc "-isystem$GCCINC" -fno-builtin-printf -fno-pic -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables -mno-pcrel
   "-I$HERE/rt/include" "-I$HERE/ioq3/include" "-I$CODE/qcommon" "-I$CODE/client" "-I$CODE/server" "-I$CODE/renderercommon" "-I$CODE/botlib" "-I$CODE/thirdparty/zlib-1.3.1" "-I$CODE/renderercommon" "-I$CODE/thirdparty/jpeg-9f" "-I$HERE/ioq3/sfr"
   -Wno-misleading-indentation -Wno-stringop-overflow -Wno-array-bounds -w
   '-DPRODUCT_VERSION="1.36_sf100"' '-DARCH_STRING="m68k"' -DBOTLIB -DSTANDALONE '-DBASEGAME="baseoa"' -DDEF_COMZONEMEGS=12 -DDEF_COMHUNKMEGS=32 -DMIN_COMHUNKMEGS=20 -DMAX_RAW_STREAMS=3 -DUSE_INTERNAL_ZLIB -DSF100 -DNO_VM_COMPILED)
 # grupos de fontes (relativos a code/)
 QCOMMON=(qcommon/cm_load.c qcommon/cm_patch.c qcommon/cm_polylib.c qcommon/cm_test.c qcommon/cm_trace.c qcommon/cmd.c qcommon/common.c qcommon/cvar.c qcommon/files.c
-  qcommon/huffman.c qcommon/md4.c qcommon/md5.c qcommon/msg.c qcommon/net_chan.c qcommon/q_math.c qcommon/q_shared.c qcommon/vm.c qcommon/vm_interpreted.c qcommon/ioapi.c qcommon/unzip.c)
+  qcommon/huffman.c qcommon/md4.c qcommon/md5.c qcommon/msg.c qcommon/net_chan.c qcommon/q_math.c qcommon/q_shared.c qcommon/vm.c qcommon/ioapi.c qcommon/unzip.c)
 SERVER=(server/sv_bot.c server/sv_ccmds.c server/sv_client.c server/sv_game.c server/sv_init.c server/sv_main.c server/sv_net_chan.c server/sv_snapshot.c server/sv_world.c)
 BOTLIB=($(cd "$CODE" && ls botlib/*.c))
 CLIENT=(client/cl_cgame.c client/cl_console.c client/cl_input.c client/cl_keys.c client/cl_main.c client/cl_net_chan.c client/cl_parse.c client/cl_scrn.c client/cl_ui.c client/cl_avi.c client/cl_cin.c
@@ -23,6 +23,8 @@ GAME=(game/ai_chat.c game/ai_cmd.c game/ai_dmnet.c game/ai_dmq3.c game/ai_main.c
 CGAME=($(cd "$CODE" && ls cgame/*.c | grep -v -e cg_newdraw.c) game/bg_lib.c game/bg_misc.c game/bg_pmove.c game/bg_slidemove.c qcommon/q_math.c qcommon/q_shared.c)
 UI=($(cd "$CODE" && ls q3_ui/*.c | grep -v -e ui_login.c -e ui_rankings.c -e ui_rankstatus.c -e ui_signup.c -e ui_specifyleague.c) game/bg_lib.c game/bg_misc.c qcommon/q_math.c qcommon/q_shared.c)
 ZLIB=(thirdparty/zlib-1.3.1/adler32.c thirdparty/zlib-1.3.1/crc32.c thirdparty/zlib-1.3.1/inflate.c thirdparty/zlib-1.3.1/inftrees.c thirdparty/zlib-1.3.1/inffast.c thirdparty/zlib-1.3.1/zutil.c)
+# interpretador da QVM do SF-100 (substitui qcommon/vm_interpreted.c): relativo a port/ioq3
+VMSF=vm_interpreted_sf.c
 # renderer SF-100 (sfr/), carregadores de imagem do renderercommon e libjpeg (decodificador)
 SFR=(sfr/sfr_image.c sfr/sfr_shader.c sfr/sfr_backend.c sfr/sfr_world.c sfr/sfr_model.c sfr/sfr_scene.c sfr/sfr_init.c sfr/jpeg_stubs.c)
 RCOMMON=(renderercommon/tr_image_tga.c renderercommon/tr_image_jpg.c renderercommon/tr_image_png.c renderercommon/tr_image_bmp.c renderercommon/tr_image_pcx.c renderercommon/puff.c renderercommon/tr_font.c)

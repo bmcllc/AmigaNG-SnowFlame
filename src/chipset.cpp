@@ -195,28 +195,35 @@ void Video::vblank() {
 }
 void Video::compose_line(const Line& ln) {
   const u32* pal = ln.pal >= 0 ? &pend_pal[(size_t)ln.pal * 256] : palette;
-  for (int x = 0; x < W; x++) {
-    u32 c = ln.bg & 0xFFFFFF;
-    for (int k = 0; k < ln.nrows; k++) {
-      const Row& r = ln.rows[k]; if (x < r.x0 || x >= r.x1) continue;
-      i64 sx = (i64)x + r.scx;
-      if (r.wrap) { sx %= r.w; if (sx < 0) sx += r.w; } else if (sx < 0 || sx >= r.w) continue;
-      u32 s = r.idx ? pal[r.p[sx]] : rbe32(r.p + sx * 4), a = (s >> 24) * r.alpha / 255;
-      if (r.pre && !r.add) {                                                  // pré-multiplicado: brilhos aditivos (alfa 0) também aparecem
+  u32* out = &frame[(size_t)ln.y * W];
+  for (int x = 0; x < W; x++) out[x] = ln.bg & 0xFFFFFF;
+  // Camada por camada (na ordem) em vez de pixel por pixel: cada pixel recebe a mesma sequência de composições. O trecho
+  // visível de cada camada e o índice de origem são calculados uma vez por linha, sem módulo nem testes por pixel.
+  for (int k = 0; k < ln.nrows; k++) {
+    const Row& r = ln.rows[k];
+    i64 lo = std::max(r.x0, 0), hi = std::min(r.x1, W), sx;
+    if (r.wrap) { sx = (lo + r.scx) % r.w; if (sx < 0) sx += r.w; }
+    else { lo = std::max<i64>(lo, -(i64)r.scx); hi = std::min<i64>(hi, (i64)r.w - r.scx); sx = lo + r.scx; }
+    if (lo >= hi) continue;
+    const bool full = r.alpha == 255, premul = r.pre && !r.add, add = r.add;
+    for (i64 x = lo; x < hi; x++) {
+      u32 s = r.idx ? pal[r.p[sx]] : rbe32(r.p + sx * 4);
+      if (++sx == r.w) sx = 0;
+      u32 a = full ? s >> 24 : (s >> 24) * r.alpha / 255, c = out[x];
+      if (premul) {                                                           // pré-multiplicado: brilhos aditivos (alfa 0) também aparecem
         if (!(s & 0xFFFFFF) && !a) continue;
         u32 o = 0; for (int sh = 0; sh < 24; sh += 8) o |= std::min<u32>(255, ((((s >> sh) & 255) * r.alpha + 127) / 255) + ((((c >> sh) & 255) * (255 - a) + 127) / 255)) << sh;
-        c = o; continue;
+        out[x] = o; continue;
       }
       if (!a) continue;
-      if (r.add) {
+      if (add) {
         u32 o = 0; for (int sh = 0; sh < 24; sh += 8) o |= std::min<u32>(255, ((c >> sh) & 255) + ((((s >> sh) & 255) * a + 127) / 255)) << sh;
-        c = o; continue;
+        out[x] = o; continue;
       }
-      if (a == 255) { c = s & 0xFFFFFF; continue; }
+      if (a == 255) { out[x] = s & 0xFFFFFF; continue; }
       u32 o = 0; for (int sh = 0; sh < 24; sh += 8) o |= ((((s >> sh) & 255) * a + ((c >> sh) & 255) * (255 - a) + 127) / 255) << sh;
-      c = o;
+      out[x] = o;
     }
-    frame[(size_t)ln.y * W + x] = c;
   }
 }
 // Compõe as linhas pendentes (a memória e o estado que elas leem não mudam até aqui; cada linha escreve só a sua parte do quadro).

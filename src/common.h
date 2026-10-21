@@ -8,6 +8,7 @@
 #include <deque>
 #include <queue>
 #include <functional>
+#include <utility>
 #include <algorithm>
 #include <stdexcept>
 
@@ -48,6 +49,7 @@ class Sched {
   void at(Ps delay, std::function<void()> fn) { q.push(Ev{now + delay, seq++, std::move(fn)}); }
   bool empty() const { return q.empty(); }
   Ps next_time() const { return q.empty() ? ~0ull : q.top().t; }
+  u64 version() const { return seq; }                // avança a cada evento agendado (o laço rápido da CPU relê o próximo evento)
   // Avança o relógio para t executando todos os eventos com tempo <= t.
   void advance_to(Ps t) {
     while (!q.empty() && q.top().t <= t) {

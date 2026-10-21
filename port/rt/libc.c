@@ -11,20 +11,52 @@
 /* ------------------------------ memória e strings ------------------------------ */
 void *memcpy(void *d, const void *s, size_t n) {
   unsigned char *dd = d; const unsigned char *ss = s;
-  if (((uintptr_t)d | (uintptr_t)s | n) % 4 == 0) { uint32_t *dw = d; const uint32_t *sw = s; n /= 4; while (n--) *dw++ = *sw++; return d; }
+  if (n >= 8 && (((uintptr_t)dd ^ (uintptr_t)ss) & 3) == 0) {         /* mesma fase de alinhamento: bytes até alinhar, depois palavras de 32 bits */
+    uint32_t *dw; const uint32_t *sw;
+    while (((uintptr_t)dd & 3) && n) { *dd++ = *ss++; n--; }
+    dw = (uint32_t *)dd; sw = (const uint32_t *)ss;
+    while (n >= 16) { uint32_t a = sw[0], b = sw[1], c = sw[2], e = sw[3]; dw[0] = a; dw[1] = b; dw[2] = c; dw[3] = e; dw += 4; sw += 4; n -= 16; }
+    while (n >= 4) { *dw++ = *sw++; n -= 4; }
+    dd = (unsigned char *)dw; ss = (const unsigned char *)sw;
+  }
   while (n--) *dd++ = *ss++;
   return d;
 }
 void *memmove(void *d, const void *s, size_t n) {
   unsigned char *dd = d; const unsigned char *ss = s;
   if (dd == ss || n == 0) return d;
-  if (dd < ss) while (n--) *dd++ = *ss++;
-  else { dd += n; ss += n; while (n--) *--dd = *--ss; }
+  if (dd < ss) {
+    if (n >= 8 && (((uintptr_t)dd ^ (uintptr_t)ss) & 3) == 0) {
+      uint32_t *dw; const uint32_t *sw;
+      while (((uintptr_t)dd & 3) && n) { *dd++ = *ss++; n--; }
+      dw = (uint32_t *)dd; sw = (const uint32_t *)ss;
+      while (n >= 4) { *dw++ = *sw++; n -= 4; }
+      dd = (unsigned char *)dw; ss = (const unsigned char *)sw;
+    }
+    while (n--) *dd++ = *ss++;
+  } else {
+    dd += n; ss += n;
+    if (n >= 8 && (((uintptr_t)dd ^ (uintptr_t)ss) & 3) == 0) {
+      uint32_t *dw; const uint32_t *sw;
+      while (((uintptr_t)dd & 3) && n) { *--dd = *--ss; n--; }
+      dw = (uint32_t *)dd; sw = (const uint32_t *)ss;
+      while (n >= 4) { *--dw = *--sw; n -= 4; }
+      dd = (unsigned char *)dw; ss = (const unsigned char *)sw;
+    }
+    while (n--) *--dd = *--ss;
+  }
   return d;
 }
 void *memset(void *d, int c, size_t n) {
   unsigned char *p = d; unsigned char v = (unsigned char)c;
-  if (((uintptr_t)d | n) % 4 == 0) { uint32_t w = v * 0x01010101u, *pw = d; n /= 4; while (n--) *pw++ = w; return d; }
+  if (n >= 8) {
+    uint32_t w = v * 0x01010101u, *pw;
+    while (((uintptr_t)p & 3) && n) { *p++ = v; n--; }
+    pw = (uint32_t *)p;
+    while (n >= 16) { pw[0] = w; pw[1] = w; pw[2] = w; pw[3] = w; pw += 4; n -= 16; }
+    while (n >= 4) { *pw++ = w; n -= 4; }
+    p = (unsigned char *)pw;
+  }
   while (n--) *p++ = v;
   return d;
 }
@@ -42,22 +74,31 @@ char *strchr(const char *s, int c) { for (;; s++) { if (*s == (char)c) return (c
 char *strrchr(const char *s, int c) { const char *r = 0; for (;; s++) { if (*s == (char)c) r = s; if (!*s) return (char *)r; } }
 char *strstr(const char *h, const char *n) { size_t l = strlen(n); if (!l) return (char *)h; for (; *h; h++) if (!strncmp(h, n, l)) return (char *)h; return 0; }
 
-/* ------------------------------ malloc (primeiro-que-couber, com fusão) ------------------------------ */
-struct blk { size_t size; int used; struct blk *next; };
+/* ------------------------------ malloc (primeiro-que-couber na lista de livres, fusão O(1) com os vizinhos) ------------------------------ */
+/* Todos os blocos formam uma lista física dupla (prev/next) para fundir vizinhos ao liberar; os livres também ficam numa lista
+   dupla própria (fnext/fprev, guardados na área útil), então malloc só percorre blocos livres e free não varre o heap. */
+struct blk { size_t size; int used; struct blk *next, *prev; };               /* 16 bytes: a área útil fica alinhada a 16 */
+struct fblk { struct blk h; struct fblk *fnext, *fprev; };
 #define HEAP_LIMIT 0x03C00000u                                    /* até 60 MB (a DDR tem 64) */
-static struct blk *heap_head;
+static struct blk *heap_head; static struct fblk *free_head;
+static void fl_add(struct blk *b) { struct fblk *f = (struct fblk *)b; f->fprev = 0; f->fnext = free_head; if (free_head) free_head->fprev = f; free_head = f; }
+static void fl_del(struct blk *b) { struct fblk *f = (struct fblk *)b; if (f->fprev) f->fprev->fnext = f->fnext; else free_head = f->fnext; if (f->fnext) f->fnext->fprev = f->fprev; }
 void __rt_init(void) {
   uintptr_t s = ((uintptr_t)_end + 15) & ~(uintptr_t)15;
-  heap_head = (struct blk *)s; heap_head->size = HEAP_LIMIT - s - sizeof(struct blk); heap_head->used = 0; heap_head->next = 0;
+  heap_head = (struct blk *)s; heap_head->size = HEAP_LIMIT - s - sizeof(struct blk); heap_head->used = 0; heap_head->next = heap_head->prev = 0;
+  free_head = 0; fl_add(heap_head);
 }
 void *malloc(size_t n) {
-  struct blk *b;
+  struct fblk *f;
   n = (n + 15) & ~(size_t)15; if (!n) n = 16;
-  for (b = heap_head; b; b = b->next) {
-    if (b->used || b->size < n) continue;
+  for (f = free_head; f; f = f->fnext) {
+    struct blk *b = &f->h;
+    if (b->size < n) continue;
+    fl_del(b);
     if (b->size >= n + sizeof(struct blk) + 32) {
       struct blk *r = (struct blk *)((char *)(b + 1) + n);
-      r->size = b->size - n - sizeof(struct blk); r->used = 0; r->next = b->next; b->size = n; b->next = r;
+      r->size = b->size - n - sizeof(struct blk); r->used = 0; r->next = b->next; r->prev = b; if (b->next) b->next->prev = r; b->size = n; b->next = r;
+      fl_add(r);
     }
     b->used = 1; return b + 1;
   }
@@ -66,8 +107,10 @@ void *malloc(size_t n) {
 void free(void *p) {
   struct blk *b, *n;
   if (!p) return;
-  ((struct blk *)p - 1)->used = 0;
-  for (b = heap_head; b; b = b->next) while (!b->used && b->next && !b->next->used) { n = b->next; b->size += sizeof(struct blk) + n->size; b->next = n->next; }
+  b = (struct blk *)p - 1; b->used = 0;
+  if (b->next && !b->next->used) { n = b->next; fl_del(n); b->size += sizeof(struct blk) + n->size; b->next = n->next; if (n->next) n->next->prev = b; }
+  if (b->prev && !b->prev->used) { n = b->prev; fl_del(n); n->size += sizeof(struct blk) + b->size; n->next = b->next; if (b->next) b->next->prev = n; b = n; }
+  fl_add(b);
 }
 /* diagnóstico: maior bloco livre e total livre / usado (sf_malloc_stats) */
 void sf_malloc_stats(size_t *largest, size_t *freeb, size_t *usedb) {

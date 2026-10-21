@@ -71,14 +71,15 @@ static void ksprintf(char *b, const char *fmt, ...) {
 }
 
 /* ------------------------------ vértices ------------------------------ */
+static unsigned *vp;                              /* próximo vértice (= VB + vn * 12) */
 static void vtx(int x, int y, int z, unsigned argb, int u, int v) {
-  unsigned *p = VB + vn * 12;
+  unsigned *p = vp, *fq = FX + QOFF;
   if (x < -QOFF) x = -QOFF; else if (x > NQ - QOFF - 1) x = NQ - QOFF - 1;      /* coordenadas fora da tabela ficam presas na borda */
   if (y < -QOFF) y = -QOFF; else if (y > NQ - QOFF - 1) y = NQ - QOFF - 1;
-  p[0] = FX[x + QOFF]; p[1] = FX[y + QOFF]; p[2] = UVT[z]; p[3] = 0x3F800000u;
-  p[4] = CT[(argb >> 16) & 255]; p[5] = CT[(argb >> 8) & 255]; p[6] = CT[argb & 255]; p[7] = CT[argb >> 24];
-  p[8] = UVT[u]; p[9] = UVT[v]; p[10] = 0; p[11] = 0;
-  vn++;
+  *p++ = fq[x]; *p++ = fq[y]; *p++ = z ? UVT[z] : 0; *p++ = 0x3F800000u;
+  *p++ = CT[(argb >> 16) & 255]; *p++ = CT[(argb >> 8) & 255]; *p++ = CT[argb & 255]; *p++ = CT[argb >> 24];
+  *p++ = UVT[u]; *p++ = UVT[v]; *p++ = 0; *p++ = 0;
+  vp = p; vn++;
 }
 static void quad4(int x0, int y0, int x1, int y1, unsigned c00, unsigned c10, unsigned c01, unsigned c11, int u0, int v0, int u1, int v1) {
   if (vn + 6 > MAXV) return;
@@ -128,7 +129,7 @@ static int mc_do(unsigned cmd, unsigned sector, unsigned count, unsigned addr) {
 static int seg_first[MAXSEG], seg_count[MAXSEG], seg_kind[MAXSEG], seg_lw[MAXSEG], seg_lh[MAXSEG], seg_fmt[MAXSEG], nseg;
 static unsigned seg_addr[MAXSEG], seg_vb[MAXSEG], seg_state[MAXSEG], seg_bs[MAXSEG], seg_bd[MAXSEG];
 static void ui_close(void) { if (seg_kind[nseg] != UI_EXT) seg_count[nseg] = vn - seg_first[nseg]; }
-static void ui_begin(void) { vn = 0; nseg = 0; seg_first[0] = 0; seg_kind[0] = UI_OPAQUE; }
+static void ui_begin(void) { vn = 0; vp = VB; nseg = 0; seg_first[0] = 0; seg_kind[0] = UI_OPAQUE; }
 static void ui_seg(int kind) {
   ui_close();
   if (nseg > 0 && seg_kind[nseg] != UI_EXT && seg_count[nseg] == 0) nseg--;      /* descarta segmento vazio */

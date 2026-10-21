@@ -4,6 +4,10 @@
 namespace sf {
 using namespace abi;
 
+// Ciclos da CPU (266 MHz) em ps: tabela para os custos de instrução comuns, em vez de uma divisão de 64 bits por instrução
+static const struct CycTab { Ps t[256]; CycTab() { for (int i = 0; i < 256; i++) t[i] = (Ps)i * 1000000ull / 266; } } cyc_tab;
+static inline Ps cyc_ps(int c) { return (unsigned)c < 256u ? cyc_tab.t[c] : (Ps)c * 1000000ull / 266; }
+
 Soc::Soc() : bridge(bus), cpu(bus), vpuA(bus, IRQ_VPUA), vpuB(bus, IRQ_VPUB), gpu(bus), blt(bus), cop(bus), paula(bus), video(bus, cop), mmu(bus), timers(bus), dvd(bus), mcard(bus), pads(bus), hid(bus) {
   bus.sched = &sched;
   bus.map_device(BRIDGE_BASE, 0x1000, &bridge);
@@ -54,7 +58,7 @@ bool Soc::step_one() {
   if (cpu.halted && sched.empty()) return false;
   if (cpu_idle()) { Ps nt = sched.next_time(); if (nt == ~0ull) return false; sched.advance_to(nt); return true; }
   u32 pc0 = cpu.pc; int c = cpu.step();
-  if (c) sched.advance_to(sched.now + (Ps)c * 1000000ull / 266 + take_stall());
+  if (c) sched.advance_to(sched.now + cyc_ps(c) + take_stall());
   if (on_step) on_step(pc0, c);
   return true;
 }
@@ -77,10 +81,24 @@ Ps Soc::run(Ps limit) {
       if (cpu.halted) { if (sched.empty() || sched.next_time() > end) break; }
       continue;
     }
+    if (!on_step) {
+      // Laço rápido (sem gancho por instrução): o relógio só passa por advance_to quando algum evento vence; senão basta somar o
+      // tempo da instrução (advance_to sem eventos devidos faz exatamente isso). Eventos agendados pela instrução são vistos pela versão.
+      Ps nt = sched.next_time(); u64 ver = sched.version();
+      for (;;) {
+        int c = cpu.step();
+        if (c == 0) break;                           // virou idle neste passo
+        Ps t = sched.now + cyc_ps(c) + take_stall();
+        if (sched.version() != ver) { nt = sched.next_time(); ver = sched.version(); }
+        if (t < nt) { sched.now = t; if (t >= end) break; }
+        else { sched.advance_to(t); break; }
+      }
+      continue;
+    }
     u32 pc0 = cpu.pc; int c = cpu.step();
-    if (on_step) on_step(pc0, c);
+    on_step(pc0, c);
     if (c == 0) continue;                            // virou idle neste passo
-    sched.advance_to(sched.now + (Ps)c * 1000000ull / 266 + take_stall());
+    sched.advance_to(sched.now + cyc_ps(c) + take_stall());
   }
   if (sched.now < end && !cpu.halted && !cpu.stopped) sched.advance_to(end);
   return sched.now - start;
@@ -92,7 +110,7 @@ bool Soc::run_until_halt(Ps limit) {
     if (cpu.stopped) { Ps nt = sched.next_time(); if (nt == ~0ull || nt > end) break; sched.advance_to(nt); }
     u32 pc0 = cpu.pc; int c = cpu.step();
     if (on_step) on_step(pc0, c);
-    if (c) sched.advance_to(sched.now + (Ps)c * 1000000ull / 266 + take_stall());
+    if (c) sched.advance_to(sched.now + cyc_ps(c) + take_stall());
   }
   return cpu.halted && cpu.reason == Cpu::HALT_INSN;
 }

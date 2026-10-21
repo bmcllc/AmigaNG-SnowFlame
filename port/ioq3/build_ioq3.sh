@@ -16,6 +16,7 @@ for f in "${BOTLIB[@]}"; do build "" botlib "$CODE/$f"; done
 for f in "${CLIENT[@]}"; do build "" client "$CODE/$f"; done
 for f in "${ZLIB[@]}"; do build "-DZ_SOLO" zlib "$CODE/$f"; done
 build "" plat "$H/ioq3/sys_snowflame.c"
+build "" plat "$H/ioq3/$VMSF"                                                       # interpretador da QVM com goto computado (no lugar de qcommon/vm_interpreted.c)
 for f in "${SFR[@]}"; do build "" sfr "$H/ioq3/$f"; done                          # renderer sobre o FlameCore
 for f in "${RCOMMON[@]}"; do build "" rcommon "$CODE/$f"; done                    # carregadores de imagem e fontes do ioq3
 for j in "${JPEG[@]}"; do build "-w" jpeg "$CODE/thirdparty/jpeg-9f/$j.c"; done  # libjpeg (só decodificação)

@@ -6,7 +6,6 @@ using namespace abi;
 
 static inline int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
-static inline u8 to8(float x) { return (u8)(clampf(x, 0.0f, 1.0f) * 255.0f + 0.5f); }
 
 static bool dfunc(u32 f, float z, float cur) {
   switch (f) { case 0: return z < cur; case 1: return z <= cur; case 2: return z > cur; case 3: return z >= cur;
@@ -200,6 +199,18 @@ void FlameCore::emit(const Vtx& a, const Vtx& b, const Vtx& c) {
       t.lod[u] = clampf(lod, 0.0f, (float)(tx.nlevels - 1));
     }
   }
+  t.inv = 1.0 / (double)area;
+  for (int k = 0; k < 3; k++) {
+    t.col[k] = f4{v[k].r, v[k].g, v[k].b, v[k].a}; t.uv[k] = f4{v[k].u, v[k].v, v[k].u1, v[k].v1}; t.fog[k] = v[k].fog;
+  }
+  t.rhwv = f4{v[0].rhw, v[1].rhw, v[2].rhw, 0.0f};
+  for (int u = 0; u < 2; u++) {
+    const Tex& tx = s.tex[u]; TexU& q = t.tu[u]; q = TexU();
+    if (!tx.valid) continue;
+    int level = tx.nlevels > 1 ? clampi((int)(t.lod[u] + 0.5f), 0, tx.nlevels - 1) : 0;
+    q.w = std::max(1, (1 << tx.lw) >> level); q.h = std::max(1, (1 << tx.lh) >> level); q.wf = (float)q.w; q.hf = (float)q.h;
+    q.base = tx.ptr + tx.off[level]; q.uvs = s.uvscale[u];
+  }
   st.tris_drawn++;
   tris.push_back(t);
 }
@@ -213,15 +224,42 @@ bool FlameCore::cover(const Tri& t, int px, int py, float& l0, float& l1, float&
   if (e0 < 0 || (e0 == 0 && !tl(1, 2))) return false;
   if (e1 < 0 || (e1 == 0 && !tl(2, 0))) return false;
   if (e2 < 0 || (e2 == 0 && !tl(0, 1))) return false;
-  double inv = 1.0 / (double)t.area;
-  l0 = (float)(e0 * inv); l1 = (float)(e1 * inv); l2 = (float)(e2 * inv);
+  l0 = (float)(e0 * t.inv); l1 = (float)(e1 * t.inv); l2 = (float)(e2 * t.inv);
   return true;
 }
 
-u32 FlameCore::texel(const Tex& t, const u32* pal, int level, int x, int y) {
-  int w = std::max(1, (1 << t.lw) >> level), h = std::max(1, (1 << t.lh) >> level);
+// Percorre os pixels cobertos de [x0,x1]x[y0,y1] chamando fn(px, py, l0, l1, l2). Funções de aresta avançadas por incremento ao
+// longo da linha (inteiras e exatas: o mesmo resultado de cover()); o triângulo é convexo, então a linha termina ao sair dele.
+template <class F> void FlameCore::raster(const Tri& t, int x0, int x1, int y0, int y1, F&& fn) {
+  const int ea[3] = {1, 2, 0}, eb[3] = {2, 0, 1}; bool tlf[3]; i64 step[3], ddx[3], ddy[3];
+  for (int k = 0; k < 3; k++) {
+    i32 dx = t.x[eb[k]] - t.x[ea[k]], dy = t.y[eb[k]] - t.y[ea[k]];
+    tlf[k] = (dy == 0 && dx > 0) || dy < 0; step[k] = -(i64)dy * 16; ddx[k] = dx; ddy[k] = dy;
+  }
+  const double inv = t.inv;
+  for (int py = y0; py <= y1; py++) {
+    i64 e[3], sy = (i64)py * 16 + 8, sx = (i64)x0 * 16 + 8; bool was_in = false;
+    for (int k = 0; k < 3; k++) e[k] = ddx[k] * (sy - t.y[ea[k]]) - ddy[k] * (sx - t.x[ea[k]]);
+    for (int px = x0; px <= x1; px++, e[0] += step[0], e[1] += step[1], e[2] += step[2]) {
+      bool in = (e[0] > 0 || (e[0] == 0 && tlf[0])) && (e[1] > 0 || (e[1] == 0 && tlf[1])) && (e[2] > 0 || (e[2] == 0 && tlf[2]));
+      if (!in) { if (was_in) break; continue; }
+      was_in = true;
+      fn(px, py, (float)(e[0] * inv), (float)(e[1] * inv), (float)(e[2] * inv));
+    }
+  }
+}
+
+// u8 -> float exatamente como (v / 255.0f), por tabela
+struct U8F { float f[256]; U8F() { for (int i = 0; i < 256; i++) f[i] = i / 255.0f; } };
+static const U8F u8f;
+
+static inline f4 unpack4(u32 c) { return f4{u8f.f[(c >> 16) & 255], u8f.f[(c >> 8) & 255], u8f.f[c & 255], u8f.f[c >> 24]}; }
+static inline int ifloor(float f) { int i = (int)f; return (float)i > f ? i - 1 : i; }
+
+u32 FlameCore::texel(const Tex& t, const TexU& q, const u32* pal, int x, int y) {
+  const int w = q.w, h = q.h;
   if (t.flags & TFLAG_CLAMP) { x = clampi(x, 0, w - 1); y = clampi(y, 0, h - 1); } else { x &= (w - 1); y &= (h - 1); }
-  const u8* base = t.ptr + t.off[level];
+  const u8* base = q.base;
   switch (t.fmt) {
     case TF_ARGB8888: return rbe32(base + ((size_t)y * w + x) * 4);
     case TF_RGB565: { u16 c = rbe16(base + ((size_t)y * w + x) * 2); int r, g, b; from565(c, r, g, b); return pack_argb(255, r, g, b); }
@@ -265,54 +303,61 @@ u32 FlameCore::texel(const Tex& t, const u32* pal, int level, int x, int y) {
   }
 }
 
-void FlameCore::sample(TileCtx& c, const RState& s, int unit, float u, float v, float lod, float out[4]) const {
+f4 FlameCore::sample(TileCtx& c, const RState& s, const TexU& q, int unit, float u, float v) const {
   const Tex& t = s.tex[unit];
-  if (!t.valid) { out[0] = out[1] = out[2] = out[3] = 1.0f; return; }
-  int level = t.nlevels > 1 ? clampi((int)(lod + 0.5f), 0, t.nlevels - 1) : 0;
-  int w = std::max(1, (1 << t.lw) >> level), h = std::max(1, (1 << t.lh) >> level);
-  float fu = u * s.uvscale[unit] * (float)w, fv = v * s.uvscale[unit] * (float)h;
-  auto unpack = [](u32 c, float* o) { o[3] = (c >> 24) / 255.0f; o[0] = ((c >> 16) & 255) / 255.0f; o[1] = ((c >> 8) & 255) / 255.0f; o[2] = (c & 255) / 255.0f; };
+  if (!t.valid) return f4{1.0f, 1.0f, 1.0f, 1.0f};
+  float fu = u * q.uvs * q.wf, fv = v * q.uvs * q.hf;
+  const u32* pal = s.pal[unit];
   if (s.flags & ST_BILINEAR) {
-    fu -= 0.5f; fv -= 0.5f; int x0 = (int)std::floor(fu), y0 = (int)std::floor(fv); float tx = fu - x0, ty = fv - y0;
-    float c00[4], c10[4], c01[4], c11[4];
-    const u32* pal = s.pal[unit];
-    unpack(texel(t, pal, level, x0, y0), c00); unpack(texel(t, pal, level, x0 + 1, y0), c10);
-    unpack(texel(t, pal, level, x0, y0 + 1), c01); unpack(texel(t, pal, level, x0 + 1, y0 + 1), c11);
-    for (int i = 0; i < 4; i++) out[i] = (c00[i] * (1 - tx) + c10[i] * tx) * (1 - ty) + (c01[i] * (1 - tx) + c11[i] * tx) * ty;
+    fu -= 0.5f; fv -= 0.5f; int x0 = ifloor(fu), y0 = ifloor(fv); float tx = fu - x0, ty = fv - y0;
+    f4 c00 = unpack4(texel(t, q, pal, x0, y0)), c10 = unpack4(texel(t, q, pal, x0 + 1, y0));
+    f4 c01 = unpack4(texel(t, q, pal, x0, y0 + 1)), c11 = unpack4(texel(t, q, pal, x0 + 1, y0 + 1));
     c.st.texfetch += 4;
-  } else {
-    unpack(texel(t, s.pal[unit], level, (int)std::floor(fu), (int)std::floor(fv)), out); c.st.texfetch += 1;
+    return (c00 * (1 - tx) + c10 * tx) * (1 - ty) + (c01 * (1 - tx) + c11 * tx) * ty;
   }
+  c.st.texfetch += 1;
+  return unpack4(texel(t, q, pal, ifloor(fu), ifloor(fv)));
 }
 
-u32 FlameCore::shade(TileCtx& c, const Tri& t, float l0, float l1, float l2) const {
-  const RState& s = states[t.state];
-  float rhw = l0 * t.v[0].rhw + l1 * t.v[1].rhw + l2 * t.v[2].rhw;
-  float p0 = l0 * t.v[0].rhw / rhw, p1 = l1 * t.v[1].rhw / rhw, p2 = l2 * t.v[2].rhw / rhw;
-  auto I = [&](float a, float b, float c) { return p0 * a + p1 * b + p2 * c; };
-  float col[4] = {I(t.v[0].r, t.v[1].r, t.v[2].r), I(t.v[0].g, t.v[1].g, t.v[2].g), I(t.v[0].b, t.v[1].b, t.v[2].b), I(t.v[0].a, t.v[1].a, t.v[2].a)};
-  for (int unit = 0; unit < 2; unit++) {
-    if (!(s.flags & (unit ? ST_TEX1 : ST_TEX0))) continue;
-    float tx[4];                                                        // coordenadas interpoladas só quando usadas
-    if (unit == 1 && (s.flags & ST_UV1)) sample(c, s, unit, I(t.v[0].u1, t.v[1].u1, t.v[2].u1), I(t.v[0].v1, t.v[1].v1, t.v[2].v1), t.lod[unit], tx);
-    else sample(c, s, unit, I(t.v[0].u, t.v[1].u, t.v[2].u), I(t.v[0].v, t.v[1].v, t.v[2].v), t.lod[unit], tx);
-    switch (s.texenv[unit]) {
-      case TE_REPLACE: for (int i = 0; i < 4; i++) col[i] = tx[i]; break;
-      case TE_DECAL: for (int i = 0; i < 3; i++) col[i] = tx[i] * tx[3] + col[i] * (1 - tx[3]); break;
-      case TE_ADD: for (int i = 0; i < 3; i++) col[i] += tx[i]; col[3] *= tx[3]; break;
-      default: for (int i = 0; i < 4; i++) col[i] *= tx[i]; break;
+// to8 dos quatro canais (r,g,b,a) de uma vez: mesma sequência de operações escalares (grampo, *255, +0,5, truncamento) em cada lane
+typedef int i4 __attribute__((vector_size(16)));
+static inline u32 pack8(f4 col) {
+  const f4 zero = {0, 0, 0, 0}, one = {1, 1, 1, 1};
+  f4 t = col < zero ? zero : col; t = t > one ? one : t;
+  i4 q = __builtin_convertvector(t * 255.0f + 0.5f, i4);
+  return ((u32)q[3] & 255) << 24 | ((u32)q[0] & 255) << 16 | ((u32)q[1] & 255) << 8 | ((u32)q[2] & 255);
+}
+
+u32 FlameCore::shade(TileCtx& c, const Tri& t, const RState& s, float l0, float l1, float l2) const {
+  const f4 pr = f4{l0, l1, l2, 0.0f} * t.rhwv;                 // l_k * rhw_k
+  const float rhw = pr[0] + pr[1] + pr[2];
+  const f4 P = pr / rhw;                                       // (l_k * rhw_k) / rhw
+  f4 col = P[0] * t.col[0] + P[1] * t.col[1] + P[2] * t.col[2];
+  const u32 f = s.flags;
+  if (f & (ST_TEX0 | ST_TEX1)) {
+    const f4 T = P[0] * t.uv[0] + P[1] * t.uv[1] + P[2] * t.uv[2];   // u, v, u1, v1
+    for (int unit = 0; unit < 2; unit++) {
+      if (!(f & (unit ? ST_TEX1 : ST_TEX0))) continue;
+      f4 tx = (unit == 1 && (f & ST_UV1)) ? sample(c, s, t.tu[unit], unit, T[2], T[3]) : sample(c, s, t.tu[unit], unit, T[0], T[1]);
+      switch (s.texenv[unit]) {
+        case TE_REPLACE: col = tx; break;
+        case TE_DECAL: { f4 d = tx * tx[3] + col * (1 - tx[3]); col[0] = d[0]; col[1] = d[1]; col[2] = d[2]; break; }
+        case TE_ADD: { float a = col[3] * tx[3]; col += tx; col[3] = a; break; }
+        default: col *= tx; break;
+      }
     }
   }
-  if ((s.flags & ST_FOG) && !(s.flags & ST_UV1)) {
-    float fogc = I(t.v[0].fog, t.v[1].fog, t.v[2].fog);
-    float den = s.fog_end - s.fog_start; float f = den != 0 ? clampf((fogc - s.fog_start) / den, 0, 1) : 1.0f;
-    float fc[3] = {((s.fog_color >> 16) & 255) / 255.0f, ((s.fog_color >> 8) & 255) / 255.0f, (s.fog_color & 255) / 255.0f};
-    for (int i = 0; i < 3; i++) col[i] = col[i] * (1 - f) + fc[i] * f;
+  if ((f & ST_FOG) && !(f & ST_UV1)) {
+    float fogc = P[0] * t.fog[0] + P[1] * t.fog[1] + P[2] * t.fog[2];
+    float den = s.fog_end - s.fog_start; float fg = den != 0 ? clampf((fogc - s.fog_start) / den, 0, 1) : 1.0f;
+    const f4 fc = {u8f.f[(s.fog_color >> 16) & 255], u8f.f[(s.fog_color >> 8) & 255], u8f.f[s.fog_color & 255], 0.0f};
+    f4 m = col * (1 - fg) + fc * fg;
+    col[0] = m[0]; col[1] = m[1]; col[2] = m[2];
   }
-  return pack_argb(to8(col[3]), to8(col[0]), to8(col[1]), to8(col[2]));
+  return pack8(col);
 }
 
-static u32 blend_px(u32 s, u32 d, u32 sf, u32 df, u32 saf, u32 daf) {
+static inline u32 blend_px(u32 s, u32 d, u32 sf, u32 df, u32 saf, u32 daf) {
   int sa = s >> 24, da = d >> 24;
   auto fac = [&](u32 k) { switch (k) { case BF_ZERO: return 0; case BF_ONE: return 255; case BF_SRC_ALPHA: return sa; case BF_INV_SRC_ALPHA: return 255 - sa;
                                          case BF_DST_ALPHA: return da; default: return 255 - da; } };
@@ -336,77 +381,75 @@ static void stencil_op(u8& sv, u32 op, u32 ref) {
 }
 
 void FlameCore::imm_tri(TileCtx& c, const Tri& t) const {
-  const RState& s = states[t.state]; u32 f = s.flags, df = (f >> ST_DEPTH_FUNC_SHIFT) & 7;
-  int x0 = std::max(t.minx, c.tox), x1 = std::min(t.maxx, c.tox + TILE - 1), y0 = std::max(t.miny, c.toy), y1 = std::min(t.maxy, c.toy + TILE - 1);
-  // Funções de aresta avançadas por incremento ao longo da linha (inteiras e exatas: o mesmo resultado de cover());
-  // o triângulo é convexo, então a linha termina ao sair dele.
-  const int ea[3] = {1, 2, 0}, eb[3] = {2, 0, 1}; bool tlf[3]; i64 step[3];
-  for (int k = 0; k < 3; k++) {
-    i32 dx = t.x[eb[k]] - t.x[ea[k]], dy = t.y[eb[k]] - t.y[ea[k]];
-    tlf[k] = (dy == 0 && dx > 0) || dy < 0; step[k] = -(i64)dy * 16;
-  }
-  const double inv = 1.0 / (double)t.area;
-  for (int py = y0; py <= y1; py++) {
-    i64 e[3], sy = (i64)py * 16 + 8, sx = (i64)x0 * 16 + 8; bool was_in = false;
-    for (int k = 0; k < 3; k++) e[k] = (i64)(t.x[eb[k]] - t.x[ea[k]]) * (sy - t.y[ea[k]]) - (i64)(t.y[eb[k]] - t.y[ea[k]]) * (sx - t.x[ea[k]]);
-    for (int px = x0; px <= x1; px++, e[0] += step[0], e[1] += step[1], e[2] += step[2]) {
-    bool in = (e[0] > 0 || (e[0] == 0 && tlf[0])) && (e[1] > 0 || (e[1] == 0 && tlf[1])) && (e[2] > 0 || (e[2] == 0 && tlf[2]));
-    if (!in) { if (was_in) break; continue; }
-    was_in = true;
-    float l0 = (float)(e[0] * inv), l1 = (float)(e[1] * inv), l2 = (float)(e[2] * inv);
-    c.st.pix_covered++;
+  const RState& s = states[t.state]; const u32 f = s.flags, df = (f >> ST_DEPTH_FUNC_SHIFT) & 7;
+  const bool stencil = f & ST_STENCIL, dtest = f & ST_DEPTH_TEST, dwrite = dtest && (f & ST_DEPTH_WRITE), blend = f & ST_BLEND, atest = f & ST_ATEST;
+  const float z0 = t.v[0].z, z1 = t.v[1].z, z2 = t.v[2].z;
+  const int x0 = std::max(t.minx, c.tox), x1 = std::min(t.maxx, c.tox + TILE - 1), y0 = std::max(t.miny, c.toy), y1 = std::min(t.maxy, c.toy + TILE - 1);
+  u64 covered = 0, shaded = 0;
+  raster(t, x0, x1, y0, y1, [&](int px, int py, float l0, float l1, float l2) {
+    covered++;
     int i = (py - c.toy) * TILE + (px - c.tox);
-    float z = l0 * t.v[0].z + l1 * t.v[1].z + l2 * t.v[2].z; if (z < 0 || z > 1) continue;
-    if (f & ST_STENCIL) {
-      if (!sfunc(s.sfunc, s.sref & s.smask, c.tst[i] & s.smask)) { stencil_op(c.tst[i], s.sfail, s.sref); continue; }
+    float z = l0 * z0 + l1 * z1 + l2 * z2; if (z < 0 || z > 1) return;
+    if (stencil) {
+      if (!sfunc(s.sfunc, s.sref & s.smask, c.tst[i] & s.smask)) { stencil_op(c.tst[i], s.sfail, s.sref); return; }
     }
-    bool dp = !(f & ST_DEPTH_TEST) || dfunc(df, z, c.tz[i]);
-    if (!dp) { if (f & ST_STENCIL) stencil_op(c.tst[i], s.zfail, s.sref); continue; }
-    u32 src = shade(c, t, l0, l1, l2); c.st.pix_shaded++;
-    if ((f & ST_ATEST) && (src >> 24) < 128) continue;                      // alpha test: descartado antes de Z/stencil/cor
-    if (f & ST_STENCIL) stencil_op(c.tst[i], s.zpass, s.sref);
-    if ((f & ST_DEPTH_TEST) && (f & ST_DEPTH_WRITE)) c.tz[i] = z;
-    c.tcol[i] = (f & ST_BLEND) ? blend_px(src, c.tcol[i], s.bsrc, s.bdst, s.basrc, s.badst) : src;
-    }
-  }
+    bool dp = !dtest || dfunc(df, z, c.tz[i]);
+    if (!dp) { if (stencil) stencil_op(c.tst[i], s.zfail, s.sref); return; }
+    u32 src = shade(c, t, s, l0, l1, l2); shaded++;
+    if (atest && (src >> 24) < 128) return;                      // alpha test: descartado antes de Z/stencil/cor
+    if (stencil) stencil_op(c.tst[i], s.zpass, s.sref);
+    if (dwrite) c.tz[i] = z;
+    c.tcol[i] = blend ? blend_px(src, c.tcol[i], s.bsrc, s.bdst, s.basrc, s.badst) : src;
+  });
+  c.st.pix_covered += covered; c.st.pix_shaded += shaded;
 }
 
 void FlameCore::render_tile(TileCtx& c, int tx, int ty, const std::vector<u32>& bin) const {
   const int tox = c.tox = tx * TILE, toy = c.toy = ty * TILE;
   u8* fb = bus.raw(rt.addr, rt.pitch * (u32)rt.h);            // validado em GC_SET_RT
-  for (int y = 0; y < TILE; y++) for (int x = 0; x < TILE; x++) {
-    int i = y * TILE + x, px = tox + x, py = toy + y;
-    if (clr.flags & CLR_COLOR) c.tcol[i] = clr.argb;
-    else c.tcol[i] = (px < rt.w && py < rt.h) ? rbe32(fb + (size_t)py * rt.pitch + px * 4) : 0;
-    c.tz[i] = clr.depth; c.tst[i] = 0;
+  for (int y = 0; y < TILE; y++) {
+    const int py = toy + y; u32* row = c.tcol + y * TILE;
+    if (clr.flags & CLR_COLOR) { for (int x = 0; x < TILE; x++) row[x] = clr.argb; }
+    else {
+      const int n = py < rt.h ? clampi(rt.w - tox, 0, TILE) : 0; const u8* src = fb + (size_t)py * rt.pitch + (size_t)tox * 4;
+      for (int x = 0; x < n; x++) row[x] = rbe32(src + x * 4);
+      for (int x = n; x < TILE; x++) row[x] = 0;
+    }
   }
+  for (int i = 0; i < TILE * TILE; i++) c.tz[i] = clr.depth;
+  std::memset(c.tst, 0, sizeof c.tst);
   size_t i = 0;
   while (i < bin.size()) {
     if (hsr && eligible(tris[bin[i]])) {
       size_t j = i; while (j < bin.size() && eligible(tris[bin[j]])) j++;
-      for (int k = 0; k < TILE * TILE; k++) c.tvis[k] = -1;
+      std::memset(c.tvis, 0xFF, sizeof c.tvis);
       for (size_t k = i; k < j; k++) {
         const Tri& t = tris[bin[k]]; u32 df = (states[t.state].flags >> ST_DEPTH_FUNC_SHIFT) & 7;
+        const float z0 = t.v[0].z, z1 = t.v[1].z, z2 = t.v[2].z; const int bk = (int)bin[k];
         int x0 = std::max(t.minx, tox), x1 = std::min(t.maxx, tox + TILE - 1), y0 = std::max(t.miny, toy), y1 = std::min(t.maxy, toy + TILE - 1);
-        for (int py = y0; py <= y1; py++) for (int px = x0; px <= x1; px++) {
-          float l0, l1, l2; if (!cover(t, px, py, l0, l1, l2)) continue;
-          c.st.pix_covered++;
+        u64 covered = 0;
+        raster(t, x0, x1, y0, y1, [&](int px, int py, float l0, float l1, float l2) {
+          covered++;
           int q = (py - toy) * TILE + (px - tox);
-          float z = l0 * t.v[0].z + l1 * t.v[1].z + l2 * t.v[2].z; if (z < 0 || z > 1) continue;
-          if (dfunc(df, z, c.tz[q])) { c.tz[q] = z; c.tvis[q] = bin[k]; }
-        }
+          float z = l0 * z0 + l1 * z1 + l2 * z2; if (z < 0 || z > 1) return;
+          if (dfunc(df, z, c.tz[q])) { c.tz[q] = z; c.tvis[q] = bk; }
+        });
+        c.st.pix_covered += covered;
       }
       for (int q = 0; q < TILE * TILE; q++) if (c.tvis[q] >= 0) {     // sombreia apenas o pixel visível, uma vez
         const Tri& t = tris[c.tvis[q]]; float l0 = 0, l1 = 0, l2 = 0;
         cover(t, tox + (q % TILE), toy + (q / TILE), l0, l1, l2);
-        c.tcol[q] = shade(c, t, l0, l1, l2); c.st.pix_shaded++;
+        c.tcol[q] = shade(c, t, states[t.state], l0, l1, l2); c.st.pix_shaded++;
       }
       i = j;
     } else { imm_tri(c, tris[bin[i]]); i++; }
   }
-  for (int y = 0; y < TILE; y++) for (int x = 0; x < TILE; x++) {
-    int px = tox + x, py = toy + y;
-    if (px < rt.w && py < rt.h) { wbe32(fb + (size_t)py * rt.pitch + px * 4, c.tcol[y * TILE + x]); c.st.vram_write += 4; }
+  for (int y = 0; y < TILE; y++) {
+    const int py = toy + y;
+    if (py >= rt.h) break;
+    const int n = clampi(rt.w - tox, 0, TILE); u8* dst = fb + (size_t)py * rt.pitch + (size_t)tox * 4; const u32* row = c.tcol + y * TILE;
+    for (int x = 0; x < n; x++) wbe32(dst + x * 4, row[x]);
+    c.st.vram_write += 4 * (u64)n;
   }
   c.st.tiles++;
 }

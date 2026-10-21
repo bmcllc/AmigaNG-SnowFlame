@@ -16,7 +16,7 @@ double floor(double x) {
   v.d = x; e = (int)((v.w.hi >> 20) & 0x7FF) - 1023;
   if (e >= 52) return x;
   if (e < 0) return x < 0 ? -1.0 : (x == 0 ? x : 0.0);
-  { double t = (double)(long long)x; return t > x ? t - 1.0 : t; }
+  { double t = (x > -2147483648.0 && x < 2147483647.0) ? (double)(int)x : (double)(long long)x; return t > x ? t - 1.0 : t; }
 }
 double ceil(double x) { return -floor(-x); }
 double trunc(double x) { return x < 0 ? ceil(x) : floor(x); }
@@ -44,11 +44,13 @@ double frexp(double x, int *e) {
 static double sin_k(double x) { double x2 = x * x; return x * (1 + x2 * (-1.0 / 6 + x2 * (1.0 / 120 + x2 * (-1.0 / 5040 + x2 * (1.0 / 362880 + x2 * (-1.0 / 39916800 + x2 * (1.0 / 6227020800.0 + x2 * (-1.0 / 1307674368000.0)))))))); }
 static double cos_k(double x) { double x2 = x * x; return 1 + x2 * (-0.5 + x2 * (1.0 / 24 + x2 * (-1.0 / 720 + x2 * (1.0 / 40320 + x2 * (-1.0 / 3628800 + x2 * (1.0 / 479001600 + x2 * (-1.0 / 87178291200.0))))))); }
 static double trig(double x, int want_cos) {
-  double q; long long n; double r; int quad;
+  double q, r, nd; int quad;
   if (x != x || isinf(x)) return __builtin_nan("");
-  q = x / HALFPI; n = (long long)(q < 0 ? q - 0.5 : q + 0.5);
-  r = x - (double)n * 1.57079632679489655800 - (double)n * 6.12323399573676603587e-17;   /* pi/2 em duas partes */
-  quad = (int)(n & 3); if (want_cos) quad = (quad + 1) & 3;
+  q = x / HALFPI;
+  if (q > -1e9 && q < 1e9) { int ni = (int)(q < 0 ? q - 0.5 : q + 0.5); nd = (double)ni; quad = ni & 3; }    /* caminho comum: conversões nativas da FPU */
+  else { long long n = (long long)(q < 0 ? q - 0.5 : q + 0.5); nd = (double)n; quad = (int)(n & 3); }
+  r = x - nd * 1.57079632679489655800 - nd * 6.12323399573676603587e-17;   /* pi/2 em duas partes */
+  if (want_cos) quad = (quad + 1) & 3;
   switch (quad) { case 0: return sin_k(r); case 1: return cos_k(r); case 2: return -sin_k(r); default: return -cos_k(r); }
 }
 double sin(double x) { return trig(x, 0); }
