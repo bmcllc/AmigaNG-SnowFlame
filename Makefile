@@ -112,37 +112,10 @@ play: dvd build/sf100_play
 
 # DVD do sistema (menu + recursos + jogos) e boot sem janela
 GAMES ?= --game snowroids=os/apps/games/snowroids.c
+# MORE_GAMES: jogos de fora somados aos de GAMES (--bin nome=imagem.bin --data caminho=arquivo), ex.: o repositório snowflame-ioq3
 
 dvd: $(B)/sf100_mkdvd os/apps/menu.c $(wildcard os/vx/*.vsm) $(wildcard os/apps/*.h) $(wildcard os/apps/games/*.c) $(wildcard os/*.c) $(wildcard os/include/*.h) $(wildcard assets/*)
-	mkdir -p out && ./$(B)/sf100_mkdvd -o out/snowflame.dvd $(GAMES)
-
-# OpenArena (ioq3): `make oa` compila o motor e monta o pk3 em out/oa; `make dvd-oa` põe os dois no DVD; `make play-oa` abre o jogo (ver docs/PORT.md)
-OA_DIR ?= out/oa
-oa:
-	port/ioq3/make_oa.sh $(OA_DIR)
-
-dvd-oa: oa
-	$(MAKE) dvd GAMES="$(GAMES) --bin openarena=$(OA_DIR)/oa.bin --data baseoa/pak0.pk3=$(OA_DIR)/pak0.pk3"
-
-play-oa: dvd-oa build/sf100_play
-	./build/sf100_play out/snowflame.dvd
-
-# Quake 3 (ioq3 com qagame/cgame/ui nativos): `make q3` compila o motor em out/q3/q3.bin; `make dvd-q3` reempacota os pk3 de Q3_BASE
-# (os seus pak0..pak8.pk3 do Quake 3; não vêm no repositório) e põe tudo no DVD; `make play-q3` abre o jogo (ver docs/PORT.md)
-Q3_DIR ?= out/q3
-Q3_BASE ?= port/ioq3/baseq3
-q3:
-	env -u CC -u CXX NATIVE=1 OBJ=$(Q3_DIR)/obj port/ioq3/build_ioq3.sh $(Q3_DIR)/q3.bin
-
-# os pk3 viram um só, com os arquivos na ordem em que o jogo os lê (port/ioq3/q3order.txt): menos saltos da cabeça do DVD
-$(Q3_DIR)/pak0.pk3: tools/mkq3.py port/ioq3/q3order.txt $(wildcard $(Q3_BASE)/*.pk3)
-	python3 tools/mkq3.py $(Q3_BASE) $@ port/ioq3/q3order.txt
-
-dvd-q3: q3 $(Q3_DIR)/pak0.pk3
-	$(MAKE) dvd GAMES="$(GAMES) --bin quake3=$(Q3_DIR)/q3.bin --data baseq3/pak0.pk3=$(Q3_DIR)/pak0.pk3"
-
-play-q3: dvd-q3 build/sf100_play
-	./build/sf100_play out/snowflame.dvd
+	mkdir -p out && ./$(B)/sf100_mkdvd -o out/snowflame.dvd $(GAMES) $(MORE_GAMES)
 
 boot: dvd $(B)/sf100_boot
 	./$(B)/sf100_boot out/snowflame.dvd --frames 400 --shot 100 --shot 250 --shot 399
@@ -170,4 +143,4 @@ verify:
 clean:
 	rm -rf build out
 
-.PHONY: all test demo verify techdemos dvd boot play oa dvd-oa play-oa q3 dvd-q3 play-q3 clean
+.PHONY: all test demo verify techdemos dvd boot play clean

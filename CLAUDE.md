@@ -23,10 +23,9 @@ make clean                    # remove build/ e out/
 make dvd                     # monta out/snowflame.dvd (menu + recursos + jogos; GAMES=--game nome=os/apps/games/x.c)
 make boot                    # liga o SF-100 no Dashboard sem janela (PNGs em out/boot/)
 make play                    # janela/som/controle; opcional, exige SDL2 e pkg-config (fora de `all`)
-make play-oa                 # idem com o OpenArena (ioq3) no DVD; ver docs/PORT.md (make oa / dvd-oa)
-make play-q3                 # idem com o Quake 3 (seus pk3 em port/ioq3/baseq3; módulos nativos); ver docs/PORT.md (make q3 / dvd-q3)
 make techdemos               # out/techdemos/ (ver docs/TECHDEMOS.md)
-port/build.sh out.bin prog.c # C real via GCC cross m68k (ColdFire V4e) + runtime em port/rt/; ver docs/PORT.md (ioquake3 em port/ioq3/)
+port/build.sh out.bin prog.c # C real via GCC cross m68k (ColdFire V4e) + runtime em port/rt/; ver docs/PORT.md
+make dvd MORE_GAMES="--bin nome=img.bin --data caminho=arq"   # jogos de fora no DVD (o ioquake3 fica no repositório ../snowflame-ioq3)
 ```
 
 `make` compila tudo e é lento (os testes do kernel/compilador/68k são pesados): use `make -j12`; o tempo de `./build/sf100_tests` completo passa de 1 min.
