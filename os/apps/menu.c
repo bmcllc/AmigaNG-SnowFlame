@@ -1,4 +1,10 @@
-/* menu.c - SnowFlame Dashboard 2.0: interface principal do SF-100 (boot/menu.bin no DVD do sistema).
+/* menu.c - SnowFlame Dashboard 2.1: interface principal do SF-100 (boot/menu.bin no DVD do sistema).
+ *
+ * 2.1 mantém o visual da 2.0 e amplia o que há por trás dele:
+ *   - ajustes (volume, música, efeitos, abertura) e último jogo ficam no SnowCard; voltar de um jogo não repete a abertura e reabre GAMES nele;
+ *   - GAMES com título/descrição/tamanho/recorde e rolagem; DISC rolável com tamanhos; MEMORY CARD com mapa de blocos e apagar saves;
+ *   - SYSTEM em 3 páginas (hardware, atividade com histórico, controles ao vivo); B no menu abre a ajuda; direcionais repetem ao segurar.
+ *   - o emissor de vértices de ui.h copia moldes prontos: mesmo quadro, quase metade das instruções por quadro nos painéis.
  *
  * Cada quadro segue o pipeline da arquitetura (seção 9 da especificação), com os chips trabalhando em paralelo:
  *   1. SnowFire (ColdFire)  entrada, lógica, matrizes em ponto fixo; publica jobs nas filas das VPUs e segue trabalhando
@@ -54,10 +60,17 @@
 /* tamanhos das partes do emblema (lidos de sys/emblem.msh) e saída da VPU-A: chama | cristal | anel 1 | anel 2 */
 static int part_first[3], part_count[3], out_flame, out_crystal, out_ring1, out_ring2, out_total, geo_jobs;
 
+#define PANEL_INFO 5                    /* painel de ajuda (B no menu); não é uma cápsula */
+#define MAXG 24                         /* jogos listados */
+#define G_ROWS 7                        /* linhas visíveis das listas: GAMES, DISC, MEMORY CARD */
+#define D_ROWS 11
+#define M_ROWS 5
 static int tick, sel, state, panel_item, list_sel, set_sel, vol = 200, music_on = 1, boot_t, boot_count, mc_ok, back = 1;
 static int sel_f, panel_f, menu_f, emb_x, emb_y, emb_s, spin, sky_fade;
+static int list_top, dsel, dtop, sys_page, mc_sel, mc_top, dlg, dlg_sel, dlg_f, fx_level, intro_on = 1, vol_set, set_dirty, warm, boot_logo = 1;
+static int n_snow = NSNOW, n_emb = NEMB, pjobs;
 static unsigned keys_prev;
-static char gname[8][24]; static int ngames;
+static char gname[MAXG][24], gtitle[MAXG][28], gdesc[MAXG][44], last_game[24]; static unsigned gsize[MAXG]; static int ngames;
 static int snd_off[5], snd_len[5];
 static int st_cpu, st_vpua, st_vpub, st_gpu, st_dsp, st_dma, st_spr, st_tris;
 static unsigned last_vpua, last_vpub, last_dma;
@@ -96,17 +109,38 @@ static int rnd(int n) { rng = rng * 1103515245u + 12345u; return (int)((rng >> 8
 #define K_DOWN 8
 #define K_OK 16
 #define K_BACK 32
+#define K_L 64
+#define K_R 128
+static unsigned kbd_down, kbd_tap, rep_t[8];
+static unsigned key_bit(int code) {                           /* tecla USB HID -> botão lógico (L/R: Q/E ou PgUp/PgDn) */
+  switch (code) {
+    case 0x50: return K_LEFT; case 0x4F: return K_RIGHT; case 0x52: return K_UP; case 0x51: return K_DOWN;
+    case 0x28: case 0x2C: return K_OK; case 0x29: case 0x2A: return K_BACK;
+    case 0x14: case 0x4B: return K_L; case 0x08: case 0x4E: return K_R;
+  }
+  return 0;
+}
 static unsigned read_keys(void) {
   unsigned k = 0, b = REG(PAD_BASE + PAD_PORT0); int ev;
   if (b & BTN_LEFT) k |= K_LEFT; if (b & BTN_RIGHT) k |= K_RIGHT; if (b & BTN_UP) k |= K_UP; if (b & BTN_DOWN) k |= K_DOWN;
-  if (b & (BTN_A | BTN_START)) k |= K_OK; if (b & BTN_B) k |= K_BACK;
-  while ((ev = in_key_poll()) >= 0) {                         /* teclado: eventos de pressão viram toques de uma amostra */
-    int code = ev & 0xFF;
-    if (ev & KEY_UP) continue;
-    if (code == 0x50) k |= K_LEFT; else if (code == 0x4F) k |= K_RIGHT; else if (code == 0x52) k |= K_UP; else if (code == 0x51) k |= K_DOWN;
-    else if (code == 0x28 || code == 0x2C) k |= K_OK; else if (code == 0x29 || code == 0x2A) k |= K_BACK;
+  if (b & (BTN_A | BTN_START)) k |= K_OK; if (b & BTN_B) k |= K_BACK; if (b & BTN_L) k |= K_L; if (b & BTN_R) k |= K_R;
+  while ((ev = in_key_poll()) >= 0) {                         /* teclado: a pressão vale ao menos uma amostra (mesmo solta no mesmo quadro) e fica segurada até soltar */
+    unsigned m = key_bit(ev & 0xFF);
+    if (ev & KEY_UP) kbd_down &= ~m; else { kbd_down |= m; kbd_tap |= m; }
   }
+  k |= kbd_down | kbd_tap; kbd_tap = 0;
   return k;
+}
+/* botões recém-apertados + repetição dos direcionais e de L/R (segurar 25 quadros, depois a cada 5): listas longas ficam navegáveis */
+static unsigned key_edges(unsigned k) {
+  unsigned nk = k & ~keys_prev; int i;
+  for (i = 0; i < 8; i++) {
+    unsigned m = 1u << i;
+    if (!(k & m)) { rep_t[i] = 0; continue; }
+    if (m == K_OK || m == K_BACK) continue;
+    if (++rep_t[i] >= 25 && (rep_t[i] - 25) % 5 == 0) nk |= m;
+  }
+  return nk;
 }
 
 /* ------------------------------ SnowPaula ------------------------------ */
@@ -168,18 +202,117 @@ static void music_start(void) {
 }
 static void music_stop(void) { int n; REG(PAULA_BASE + PA_SEQ_CTRL) = 0; for (n = 16; n < 22; n++) snd_voice_stop(n); }
 
-/* ------------------------------ cartão de memória ------------------------------ */
+/* ------------------------------ efeitos (densidade de neve e brasas) ------------------------------ */
+static const int fx_cnt[3][2] = { { NSNOW, NEMB }, { 36, 20 }, { 0, 0 } };
+static const char *fx_name[3] = { "High", "Low", "Off" };
+static void fx_apply(void) { n_snow = fx_cnt[fx_level][0]; n_emb = fx_cnt[fx_level][1]; }
+
+/* ------------------------------ cartão de memória ------------------------------
+ * O bloco 0 (4 KB, apagado de uma vez) é do Dashboard e vive em RAM (A_MC): setor 0 = contador de boots ('SFMC'), setor 1 = ajustes ('SFST').
+ * Mexer em qualquer campo apaga e regrava o bloco inteiro. O resto do cartão só é lido (varredura do 1º setor de cada bloco, aos poucos) e,
+ * a pedido, apagado bloco a bloco pelo gerenciador. Um bloco com dados cujo 1º setor não é do Dashboard nem do SnowRoids aparece como "outro". */
+#define MC_SYS 0x53464D43u              /* 'SFMC' */
+#define MC_SET 0x53465354u              /* 'SFST' */
+#define MC_HI  0x53525348u              /* recorde do SnowRoids (setor 8, mesmo cabeçalho de games/snowroids.c) */
+#define MC_MAXB 256
+static unsigned *mcb = (unsigned *)A_MC;
+static int mc_nb, mc_scan_pos, mc_used, mc_n, mc_hi = -1, mc_list[MC_MAXB];
+static unsigned char mc_kind[MC_MAXB]; static unsigned mc_val[MC_MAXB];   /* por bloco: 0 livre, 1 sistema, 2 recorde do SnowRoids, 3 outro; e a 2ª palavra do setor */
+static int mc_read(unsigned sector, unsigned count, unsigned addr) {
+  os_cache_flush(addr, count * 512); os_cache_invalidate(addr, count * 512);
+  return mc_do(1, sector, count, addr);
+}
+static void mcb_commit(void) {
+  if (!mc_ok) return;
+  os_cache_flush(A_MC, 4096);
+  if (mc_do(3, 0, 0, A_MC) || mc_do(2, 0, 8, A_MC)) mc_ok = 0;
+}
+static void scpy(char *d, const char *s, int max) { int i; for (i = 0; i < max - 1 && s[i]; i++) d[i] = s[i]; d[i] = 0; }
+static void settings_load(void) {
+  unsigned *s = mcb + 128;
+  if (s[0] != MC_SET || s[1] != 1) return;
+  vol = imin(256, imax(0, (int)s[2])); music_on = s[3] != 0; fx_level = imin(2, (int)s[4]); intro_on = s[5] != 0; vol_set = s[6] != 0;
+  scpy(last_game, (const char *)(mcb + 136), 24); fx_apply();
+  if (vol_set) snd_master(vol);                                   /* o volume padrão deixa o mestre como está: o mix do menu foi calibrado com ele */
+}
+static void settings_store(void) {
+  unsigned *s = mcb + 128; int i;
+  set_dirty = 0;
+  s[0] = MC_SET; s[1] = 1; s[2] = (unsigned)vol; s[3] = (unsigned)music_on; s[4] = (unsigned)fx_level; s[5] = (unsigned)intro_on; s[6] = (unsigned)vol_set;
+  for (i = 0; i < 24; i++) ((char *)(mcb + 136))[i] = last_game[i];
+  mcb_commit();
+}
 static void mc_boot_counter(void) {
-  unsigned *b = (unsigned *)A_MC; int i;
+  int i;
   mc_ok = (REG(MCARD_BASE + MC_STATUS) & 8) != 0;
   if (!mc_ok) return;
-  os_cache_flush(A_MC, 512); os_cache_invalidate(A_MC, 512);
-  if (mc_do(1, 0, 1, A_MC)) { mc_ok = 0; return; }
-  if (b[0] == 0x53464D43u) boot_count = (int)b[1] + 1; else boot_count = 1;
-  for (i = 0; i < 128; i++) b[i] = 0xFFFFFFFFu;
-  b[0] = 0x53464D43u; b[1] = (unsigned)boot_count;
-  os_cache_flush(A_MC, 512);
-  if (mc_do(3, 0, 0, A_MC) || mc_do(2, 0, 1, A_MC)) mc_ok = 0;
+  mc_nb = imin(MC_MAXB, (int)(REG(MCARD_BASE + MC_CAPACITY) / 8));
+  if (mc_read(0, 8, A_MC)) { mc_ok = 0; return; }
+  if (mcb[0] == MC_SYS) boot_count = (int)mcb[1] + 1;
+  else { boot_count = 1; for (i = 0; i < 1024; i++) mcb[i] = 0xFFFFFFFFu; }   /* bloco virgem ou de outro dono: começa limpo */
+  mcb[0] = MC_SYS; mcb[1] = (unsigned)boot_count;
+  settings_load();
+  mcb_commit();
+}
+static void mc_scan_step(int n) {                                /* lê o 1º setor de alguns blocos por quadro; a lista de saves cresce em ordem de bloco */
+  unsigned *b = (unsigned *)(A_MC + 0x1000);
+  while (n-- > 0 && mc_scan_pos < mc_nb) {
+    int blk = mc_scan_pos++, i, blank = 1;
+    if (mc_read((unsigned)blk * 8, 1, A_MC + 0x1000)) { mc_ok = 0; return; }
+    for (i = 0; i < 16 && blank; i++) if (b[i] != 0xFFFFFFFFu) blank = 0;
+    mc_kind[blk] = blank ? 0 : b[0] == MC_SYS ? 1 : b[0] == MC_HI ? 2 : 3; mc_val[blk] = b[1];
+    if (!blank) { mc_used++; mc_list[mc_n++] = blk; }
+    if (mc_kind[blk] == 2 && mc_hi < 0) mc_hi = (int)b[1];
+  }
+}
+static void mc_delete(int idx) {                                 /* apaga o bloco do save 'idx' da lista (o bloco 0 nunca chega aqui) */
+  int blk = mc_list[idx], i;
+  if (mc_do(3, (unsigned)blk * 8, 0, A_MC + 0x1000)) { mc_ok = 0; return; }
+  if (mc_kind[blk] == 2) mc_hi = -1;
+  mc_kind[blk] = 0; mc_used--; mc_n--;
+  for (i = idx; i < mc_n; i++) mc_list[i] = mc_list[i + 1];
+}
+static int mc_deletable(void) { return mc_ok && mc_n > 0 && mc_kind[mc_list[mc_sel]] != 1; }
+
+/* ------------------------------ jogos e arquivos do disco ------------------------------ */
+static int seq(const char *a, const char *b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
+static int sw(const char *s, const char *p) { while (*p && *s == *p) { s++; p++; } return *p == 0; }      /* s começa com p */
+static void fmt_size(char *b, unsigned n) {                       /* "700 B", "70 KB", "458.8 MB", "1.2 GB" */
+  if (n < 1024) ksprintf(b, "%u B", n);
+  else if (n < 1048576u) ksprintf(b, "%u KB", (n + 512) / 1024);
+  else if (n < 1073741824u) { unsigned t = n / 104858u; ksprintf(b, "%u.%u MB", t / 10, t % 10); }
+  else { unsigned t = n / 107374182u; ksprintf(b, "%u.%u GB", t / 10, t % 10); }
+}
+static char ginfo[1024];                                          /* sys/games.inf: uma linha "arquivo|Título|Descrição" por jogo (sf100_mkdvd --info) */
+static void game_meta(int g) {                                    /* título e descrição do jogo g; sem entrada no .inf o título vem do nome do arquivo */
+  const char *p = ginfo, *n = gname[g]; int i;
+  scpy(gtitle[g], n, 28); gdesc[g][0] = 0;
+  if (gtitle[g][0] >= 'a' && gtitle[g][0] <= 'z') gtitle[g][0] -= 32;
+  for (i = 0; gtitle[g][i]; i++) if (gtitle[g][i] == '_' || gtitle[g][i] == '-') gtitle[g][i] = ' ';
+  while (*p) {
+    int k = 0;
+    while (n[k] && p[k] == n[k]) k++;
+    if (!n[k] && p[k] == '|') {
+      p += k + 1; i = 0; while (*p && *p != '|' && *p != '\n' && i < 27) gtitle[g][i++] = *p++;
+      gtitle[g][i] = 0; if (*p == '|') p++;
+      i = 0; while (*p && *p != '\n' && i < 43) gdesc[g][i++] = *p++;
+      gdesc[g][i] = 0;
+      return;
+    }
+    while (*p && *p != '\n') p++;
+    if (*p) p++;
+  }
+}
+static void scan_games(void) {                                    /* todo games/NOME.bin do disco; a ordem é a do disco */
+  int i, n = fs_count(), len, k; ngames = 0;
+  for (i = 0; i < n && ngames < MAXG; i++) {
+    const char *f = fs_name(i);
+    if (!sw(f, "games/")) continue;
+    len = 0; while (f[len]) len++;
+    if (len < 11 || !seq(f + len - 4, ".bin")) continue;
+    for (k = 6; k < len - 4 && k - 6 < 23; k++) gname[ngames][k - 6] = f[k];
+    gname[ngames][k - 6] = 0; gsize[ngames] = fs_size_at(i); game_meta(ngames); ngames++;
+  }
 }
 
 /* ------------------------------ SnowVector A: emblema 3D ------------------------------ */
@@ -267,21 +400,27 @@ static void particles_init(void) {
   }
   vx_dma_to_dmem(1, 0x100, (void *)A_PST, (NSNOW + NEMB) * 64);
 }
-static void particles_submit(void) {
+static void particles_submit(void) {             /* efeitos "Low"/"Off": a VPU-B processa só as primeiras n_snow / n_emb partículas de cada grupo */
   unsigned s[6]; int calm = state == ST_PANEL ? 40 : 100;
   part_consts(4, F(calm), -30, -30, 700, 540, F(4), F(2));
   part_consts(5, F(calm), emb_x - 150, emb_y - 230, 300, 360, F(7), F(4));
   os_cache_flush(A_K + 4 * 0x200, 2 * 0x200);
-  vx_sem_reset(1);
-  s[0] = 0x100; s[1] = 0; s[2] = 0x100 + NSNOW * 64; s[3] = A_POUT; s[4] = NSNOW * 288; s[5] = A_K + 4 * 0x200;
-  while (vx_submit(1, 0, s, 6) < 0) task_yield();
-  s[0] = 0x100 + NSNOW * 64; s[2] = 0x100 + (NSNOW + NEMB) * 64; s[3] = A_POUT + NSNOW * 288; s[4] = NEMB * 288; s[5] = A_K + 5 * 0x200;
-  while (vx_submit(1, 0, s, 6) < 0) task_yield();
+  vx_sem_reset(1); pjobs = 0;
+  if (n_snow > 0) {
+    s[0] = 0x100; s[1] = 0; s[2] = 0x100 + n_snow * 64; s[3] = A_POUT; s[4] = n_snow * 288; s[5] = A_K + 4 * 0x200;
+    while (vx_submit(1, 0, s, 6) < 0) task_yield();
+    pjobs++;
+  }
+  if (n_emb > 0) {
+    s[0] = 0x100 + NSNOW * 64; s[1] = 0; s[2] = 0x100 + (NSNOW + n_emb) * 64; s[3] = A_POUT + NSNOW * 288; s[4] = n_emb * 288; s[5] = A_K + 5 * 0x200;
+    while (vx_submit(1, 0, s, 6) < 0) task_yield();
+    pjobs++;
+  }
 }
 static void vpus_wait(void) {                    /* cada job de geometria dá SIGNAL 0; cada job de partículas, SIGNAL 1 */
   int i;
   for (i = 0; i < geo_jobs; i++) vx_sem_wait(0);
-  vx_sem_wait(1); vx_sem_wait(1);
+  for (i = 0; i < pjobs; i++) vx_sem_wait(1);
 }
 
 /* ------------------------------ SnowCopper: céu por scanline ------------------------------ */
@@ -334,7 +473,7 @@ static void hud_button(int cell, const char *letter, const char *label, int x, i
   hud_icon(cell, x, y); hud_text(x + 12 - hud_text_w(letter) / 2 - 1, y + 3, letter, 0); hud_text(x + 28, y + 3, label, 0);
 }
 static void hud_draw(unsigned surf) {
-  char b[64]; int x;
+  char b[64]; int x, pad_ok;
   gx_blit(BOP_FILL, 0, 0, surf, SW * 4, SW, 32, 0xA8050A20u);
   gx_blit(BOP_FILL, 0, 0, surf + 32 * SW * 4, SW * 4, SW, 1, 0xFF60C8FFu);
   gx_blit(BOP_FILL, 0, 0, surf + 446 * SW * 4, SW * 4, SW, 1, 0xC0FF8A30u);
@@ -342,20 +481,33 @@ static void hud_draw(unsigned surf) {
   spr = (unsigned *)A_SPR; nspr = 0;
   hud_icon(5, 10, 4); x = hud_text(40, 8, "AMIGA", 0); hud_text(x + 6, 8, "SnowFlame", 1);
   ksprintf(b, "%d:%02d", (int)(os_ticks() / 60000), (int)((os_ticks() / 1000) % 60)); hud_text(SW - 14 - hud_text_w(b), 8, b, 0);
+  pad_ok = REG(PAD_BASE + PAD_PORT0 + 12) & 1;
+  hud_icon(pad_ok ? 0 : 4, SW - 292, 4); hud_text(SW - 266, 8, "PAD", pad_ok ? 0 : 1);
   hud_icon(mc_ok ? 3 : 4, SW - 214, 4); hud_text(SW - 188, 8, "CARD", mc_ok ? 0 : 1);
   hud_icon(2, SW - 136, 4); hud_text(SW - 110, 8, "DVD", 0);
-  if (state == ST_PANEL) { hud_button(0, "A", panel_item == 0 ? "Play" : "Select", 14, 452); hud_button(1, "B", "Back", 120, 452); }
-  else { hud_button(0, "A", "Open", 14, 452); hud_button(1, "B", "Info", 120, 452); }
+  if (dlg) { hud_button(0, "A", "Confirm", 14, 452); hud_button(1, "B", "Cancel", 120, 452); }
+  else if (state == ST_PANEL) {                                   /* A só aparece onde faz algo */
+    const char *al = panel_item == 0 && ngames > 0 ? "Play" : panel_item == 1 && mc_deletable() ? "Delete" : panel_item == 4 ? "Change" : 0;
+    int paged = panel_item == 2 || (panel_item == 0 && ngames > G_ROWS) || (panel_item == 1 && mc_n > M_ROWS) || (panel_item == 3 && fs_count() > D_ROWS);
+    if (al) hud_button(0, "A", al, 14, 452);
+    hud_button(1, "B", "Back", al ? 120 : 14, 452);
+    if (paged) hud_text(al ? 196 : 110, 456, "L / R  Page", 1);
+  } else { hud_button(0, "A", "Open", 14, 452); hud_button(1, "B", "Info", 120, 452); }
   ksprintf(b, "CPU %d%%   VPU-A %d%%   VPU-B %d%%   GPU %d%%", st_cpu, st_vpua, st_vpub, st_gpu); hud_text(SW - 14 - hud_text_w(b), 456, b, 1);
   st_spr = nspr;
   gx_blit_sprites(A_SPR, nspr, surf, SW * 4, SW, SH);
 }
 
 /* ------------------------------ FlameCore 2D: formas da interface ------------------------------ */
-static void qpoly(int x0, int y0, int x1, int y1, int x2, int y2, int x3, int y3, unsigned c0, unsigned c1) {   /* quadrilátero qualquer (1/4 px) */
+static void qpoly(int x0, int y0, int x1, int y1, int x2, int y2, int x3, int y3, unsigned c0, unsigned c1) {   /* quadrilátero qualquer (1/4 px), cor c0 nos 2 primeiros cantos e c1 nos outros */
+  struct Vx *p; unsigned *fq = FX + QOFF;
   if (vn + 6 > MAXV) return;
-  vtx(x0, y0, 0, c0, 0, 0); vtx(x1, y1, 0, c0, 0, 0); vtx(x2, y2, 0, c1, 0, 0);
-  vtx(x0, y0, 0, c0, 0, 0); vtx(x2, y2, 0, c1, 0, 0); vtx(x3, y3, 0, c1, 0, 0);
+  x0 = QCL(x0); y0 = QCL(y0); x1 = QCL(x1); y1 = QCL(y1); x2 = QCL(x2); y2 = QCL(y2); x3 = QCL(x3); y3 = QCL(y3);
+  p = (struct Vx *)vp;
+  vt_col = vt_one; vcol(&vt_col, c0); p[0] = vt_col; p[1] = vt_col; vcol(&vt_col, c1); p[2] = vt_col; p[5] = vt_col;   /* u = v = 0 já vêm do molde */
+  p[0].x = fq[x0]; p[0].y = fq[y0]; p[1].x = fq[x1]; p[1].y = fq[y1]; p[2].x = fq[x2]; p[2].y = fq[y2]; p[5].x = fq[x3]; p[5].y = fq[y3];
+  p[3] = p[0]; p[4] = p[2];
+  vp = (unsigned *)(p + 6); vn += 6;
 }
 static void nine(int x0, int y0, int x1, int y1, int k, unsigned c) {   /* 9 fatias de uma textura 64x64 com cantos de 16 texels (k px na tela) */
   int xs[4], ys[4], us[4] = {0, 256, 768, 1024}, i, j;
@@ -420,59 +572,229 @@ static void bar(int x, int y, int w, int pct, unsigned c0, unsigned c1) {
 #define PX1 620
 #define PY0 62
 #define PY1 436
-static void panel_shapes(int ox) {
-  int x0 = PX0 + ox, y = PY0 + 64, i;
-  if (panel_item == 0 && ngames > 0) quad4((x0 + 18) * 4, (y + list_sel * 30 - 3) * 4, (PX1 + ox - 18) * 4, (y + list_sel * 30 + 23) * 4, 0xC0FF8A2Au, 0x30FF8A2Au, 0xC0FF8A2Au, 0x30FF8A2Au, 0, 0, 0, 0);
-  if (panel_item == 2) {
-    int pv[5]; pv[0] = st_cpu; pv[1] = st_vpua; pv[2] = st_vpub; pv[3] = st_gpu; pv[4] = st_dsp;
-    for (i = 0; i < 5; i++) bar(x0 + 112, y + 168 + i * 24 + 5, 150, pv[i], 0xFF40B8FFu, 0xFFFF7A20u);
+#define C_COL 0xFFE8F0FFu
+#define C_DIM 0xFF8FA6D8u
+#define C_ICE 0xFF8ED8FFu
+#define C_EMB 0xFFFFB070u
+#define C_WHT 0xFFFFFFFFu
+#define NSET 6                                                    /* linhas de SETTINGS */
+#define NHIST 32                                                  /* amostras do histórico de carga (uma a cada 6 quadros) */
+static const char *sys_tab[3] = { "HARDWARE", "ACTIVITY", "PADS" };
+static const char *set_name[NSET] = { "Volume", "Ambient music", "Sound test", "Effects", "Boot intro", "Restore defaults" };
+static const char *set_help[NSET][2] = {
+  { "Master volume of the console.", "Left / Right to adjust." },
+  { "Soft pad that plays on this screen.", "Left / Right or A to switch it." },
+  { "Plays three bells to check the sound.", "Press A." },
+  { "Density of the snow and embers.", "Lower it to save GPU time." },
+  { "Plays the opening animation at power-on.", "Coming back from a game never plays it." },
+  { "Volume, music, effects and intro go", "back to the factory values." } };
+static const unsigned lamp_btn[12] = { BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_A, BTN_B, BTN_X, BTN_Y, BTN_L, BTN_R, BTN_START, BTN_SELECT };
+static const char *lamp_lbl[12] = { "^", "v", "<", ">", "A", "B", "X", "Y", "LB", "RB", "St", "Sl" };
+static unsigned char hist[NHIST]; static int hist_i;
+static unsigned pd_b[4], pd_a[4], pd_t[4]; static int pd_on[4];  /* controles lidos por quadro na página PADS */
+static const char *panel_name(void) { return panel_item < N_ITEMS ? item_name[panel_item] : "INFO"; }
+static int game_is_last(int g) { return last_game[0] && seq(gname[g], last_game); }
+
+static void sel_bar(int x0, int x1, int y, int h) {              /* barra de seleção em brasa: o degradê some para a direita */
+  quad4(x0 * 4, y * 4, x1 * 4, (y + h) * 4, 0xC0FF8A2Au, 0x30FF8A2Au, 0xC0FF8A2Au, 0x30FF8A2Au, 0, 0, 0, 0);
+}
+static void divider(int x0, int x1, int y) { quadc(x0 * 4, y * 4, x1 * 4, y * 4 + 4, 0x40AEDCFFu); }
+static void scrollbar(int x, int y0, int y1, int top, int rows, int n) {
+  int h = y1 - y0, th, ty;
+  if (n <= rows) return;
+  th = imax(12, h * rows / n); ty = y0 + (h - th) * top / (n - rows);
+  quadc(x * 4, y0 * 4, (x + 3) * 4, y1 * 4, 0x30FFFFFFu); quadc(x * 4, ty * 4, (x + 3) * 4, (ty + th) * 4, 0xC08ED8FFu);
+}
+static void read_pads(void) {
+  int p;
+  for (p = 0; p < 4; p++) {
+    unsigned b = PAD_BASE + PAD_PORT0 + (unsigned)p * 0x10;
+    pd_on[p] = REG(b + 12) & 1; pd_b[p] = REG(b); pd_a[p] = REG(b + 4); pd_t[p] = REG(b + 8);
   }
-  if (panel_item == 4) {
-    quadc((x0 + 18) * 4, (y + set_sel * 44 - 6) * 4, (PX1 + ox - 18) * 4, (y + set_sel * 44 + 30) * 4, 0x50FF8A2Au);
+}
+static void panel_shapes(int ox) {
+  int x0 = PX0 + ox, y = PY0 + 64, i, xl = x0 + 18, xr = PX1 + ox - 18, xt = x0 + 26, xs = PX1 + ox - 14;
+  if (panel_item == 0) {
+    if (ngames > 0) sel_bar(xl, xr, y + (list_sel - list_top) * 30 - 3, 26);
+    scrollbar(xs, y - 3, y + G_ROWS * 30 - 7, list_top, G_ROWS, ngames);
+    divider(xt, xr - 8, 340);
+  } else if (panel_item == 1) {
+    if (mc_ok) {
+      divider(xt, xr - 8, 240);
+      if (mc_n > 0) sel_bar(xl, xr, 272 + (mc_sel - mc_top) * 26 - 2, 24);
+      scrollbar(xs, 270, 270 + M_ROWS * 26, mc_top, M_ROWS, mc_n);
+    }
+  } else if (panel_item == 2) {
+    int tx = xt;
+    for (i = 0; i < sys_page; i++) tx += text_w(sys_tab[i], 84) + 22;
+    quadc(tx * 4, 137 * 4, (tx + text_w(sys_tab[sys_page], 84)) * 4, 139 * 4, 0xFFFF8A2Au);   /* sublinhado da aba */
+    if (sys_page == 1) {
+      int pv[5], gx = xt + 4, g0 = 342;
+      pv[0] = st_cpu; pv[1] = st_vpua; pv[2] = st_vpub; pv[3] = st_gpu; pv[4] = st_dsp;
+      for (i = 0; i < 5; i++) bar(x0 + 112, 172 + i * 24 + 5, 150, pv[i], 0xFF40B8FFu, 0xFFFF7A20u);
+      quadc(gx * 4, g0 * 4, (gx + 256) * 4, (g0 + 64) * 4, 0x40203860u);                         /* histórico da carga de quadro: 4 s */
+      for (i = 0; i < NHIST; i++) {
+        int v = hist[(hist_i + i) % NHIST], h = v * 64 / 100;
+        if (h > 0) quadc((gx + i * 8) * 4, (g0 + 64 - h) * 4, (gx + i * 8 + 6) * 4, (g0 + 64) * 4, mix(0xFF40B8FFu, 0xFFFF7A20u, imax(0, v - 50) * 256 / 50));   /* gelo; vira brasa acima de 50% */
+      }
+      quadc(gx * 4, (g0 + 32) * 4, (gx + 256) * 4, (g0 + 32) * 4 + 4, 0x30FFFFFFu);
+    } else if (sys_page == 2) {
+      int p, k;
+      for (p = 0; p < 4; p++) if (pd_on[p]) {
+        int py = 146 + p * 62 + 20;
+        for (k = 0; k < 12; k++) quadc((xt + k * 21) * 4, py * 4, (xt + k * 21 + 17) * 4, (py + 17) * 4, (pd_b[p] & lamp_btn[k]) ? 0xFFFF8A2Au : 0x70203860u);
+      }
+    }
+  } else if (panel_item == 3) {
+    sel_bar(xl, xr, 172 + (dsel - dtop) * 19 - 2, 18);
+    scrollbar(xs, 170, 170 + D_ROWS * 19, dtop, D_ROWS, fs_count());
+  } else if (panel_item == 4) {
+    quadc(xl * 4, (y + set_sel * 38 - 5) * 4, xr * 4, (y + set_sel * 38 + 31) * 4, 0x50FF8A2Au);
     bar(x0 + 130, y + 8, 170, vol * 100 / 256, 0xFF40B8FFu, 0xFFFF9A40u);
   }
 }
 static void panel_text(int ox) {
-  char buf[64]; int x0 = PX0 + ox + 26, y = PY0 + 64, i; unsigned col = 0xFFE8F0FFu, dim = 0xFF8FA6D8u, ice = 0xFF8ED8FFu, ember = 0xFFFFB070u;
-  text(x0 + 44, PY0 + 18, item_name[panel_item], 150, 0xFFFFFFFFu);
+  char buf[80], sz[24]; int x0 = PX0 + ox + 26, y = PY0 + 64, xe = PX1 + ox - 26, i;
+  text(x0 + 44, PY0 + 18, panel_name(), 150, C_WHT);
   if (panel_item == 0) {
-    if (ngames == 0) { text(x0, y + 60, "No games found on this disc", 110, dim); return; }
-    for (i = 0; i < ngames; i++) text(x0 + 8, y + i * 30, gname[i], 130, i == list_sel ? 0xFFFFFFFFu : dim);
+    if (ngames == 0) { text(x0, y + 60, "No games found on this disc", 110, C_DIM); text(x0, y + 90, "Games live in games/NAME.bin on the disc.", 82, C_DIM); return; }
+    for (i = 0; i < G_ROWS && list_top + i < ngames; i++) {
+      int g = list_top + i;
+      text(x0 + 8, y + i * 30, gtitle[g], 130, g == list_sel ? C_WHT : C_DIM);
+      if (game_is_last(g)) text(xe - 8 - text_w("LAST", 78), y + i * 30 + 5, "LAST", 78, C_EMB);
+    }
+    if (gdesc[list_sel][0]) text(x0, 350, gdesc[list_sel], 90, C_DIM); else { ksprintf(buf, "games/%s.bin", gname[list_sel]); text(x0, 350, buf, 86, C_DIM); }
+    fmt_size(sz, gsize[list_sel]); ksprintf(buf, "Size %s", sz); text(x0, 376, buf, 88, C_ICE);
+    if (seq(gname[list_sel], "snowroids") && mc_hi >= 0) { ksprintf(buf, "Best %06d", mc_hi); text(x0 + 130, 376, buf, 88, C_EMB); }
   } else if (panel_item == 1) {
-    if (!mc_ok) { text(x0, y + 60, "No SnowCard inserted in slot A", 110, dim); return; }
-    ksprintf(buf, "SnowCard A   %d KB  /  %d sectors", (int)(REG(MCARD_BASE + MC_CAPACITY) / 2), (int)REG(MCARD_BASE + MC_CAPACITY)); text(x0, y, buf, 105, col);
-    ksprintf(buf, "System boots recorded: %d", boot_count); text(x0, y + 36, buf, 130, ember);
-    text(x0, y + 84, "SnowFlame system data   -   sector 0", 95, ice);
-    text(x0, y + 104, "SnowRoids high score    -   sector 8", 95, ice);
-    text(x0, y + 150, "Flash: program clears bits, erase in 4 KB", 88, dim);
-    text(x0, y + 168, "blocks. The counter survives every reset.", 88, dim);
+    if (!mc_ok) { text(x0, y + 60, "No SnowCard inserted in slot A", 110, C_DIM); text(x0, y + 90, "Insert a card to keep settings and saves.", 82, C_DIM); return; }
+    ksprintf(buf, "SnowCard A   %d KB", (int)(REG(MCARD_BASE + MC_CAPACITY) / 2)); text(x0, y - 4, buf, 105, C_COL);
+    ksprintf(buf, "%d of %d blocks used  -  %d KB free", mc_used, mc_nb, (mc_nb - mc_used) * 4); text(x0, 220, buf, 82, C_DIM);
+    text(x0, 248, "SAVED DATA", 88, C_EMB);
+    if (mc_scan_pos < mc_nb) text(x0 + 96, 249, "scanning...", 78, C_DIM);
+    for (i = 0; i < M_ROWS && mc_top + i < mc_n; i++) {
+      int idx = mc_top + i, b = mc_list[idx], k = mc_kind[b], ry = 272 + i * 26;
+      text(x0 + 8, ry, k == 1 ? "SnowFlame system data" : k == 2 ? "SnowRoids high score" : "Unknown data", 105, idx == mc_sel ? C_WHT : C_DIM);
+      if (k == 1) ksprintf(buf, "%d boot%s", (int)mc_val[b], mc_val[b] == 1 ? "" : "s"); else if (k == 2) ksprintf(buf, "%06d", (int)mc_val[b]); else ksprintf(buf, "block %d", b);
+      text(xe - 6 - text_w(buf, 86), ry + 3, buf, 86, idx == mc_sel ? C_ICE : C_DIM);
+    }
+    if (mc_n > 0 && mc_kind[mc_list[mc_sel]] == 1) text(x0, 410, "System data cannot be deleted.", 80, C_DIM);
   } else if (panel_item == 2) {
-    text(x0, y - 4, "SnowFire    ColdFire V4e 266 MHz, FPU, eMAC, MMU", 82, col);
-    text(x0, y + 16, "SnowVector  2 x FP32x4 SIMD 150 MHz, 2.4 GFLOPS", 82, col);
-    text(x0, y + 36, "FlameCore   tile renderer 200 MHz, 2 pipes, 4 TMU", 82, col);
-    text(x0, y + 56, "SnowPaula   DSP 100 MHz, 64 voices, 48 kHz", 82, col);
-    text(x0, y + 76, "Memory      64 MB DDR, 32 MB VRAM, 4 MB ARAM", 82, col);
-    ksprintf(buf, "SnowOS Native   up %d s   heap %d KB", (int)(os_ticks() / 1000), (int)(os_heap_free() / 1024)); text(x0, y + 100, buf, 88, ice);
-    text(x0, y + 140, "LIVE ACTIVITY", 100, ember);
-    { const char *nm[5]; int pv[5]; nm[0] = "SnowFire"; nm[1] = "Vector A"; nm[2] = "Vector B"; nm[3] = "FlameCore"; nm[4] = "SnowPaula";
+    int tx = x0, pv[5];
+    for (i = 0; i < 3; i++) { text(tx, 118, sys_tab[i], 84, i == sys_page ? C_WHT : C_DIM); tx += text_w(sys_tab[i], 84) + 22; }
+    if (sys_page == 0) {
+      text(x0, 146, "SnowFire    ColdFire V4e 266 MHz, FPU, eMAC, MMU", 82, C_COL);
+      text(x0, 166, "SnowVector  2 x FP32x4 SIMD 150 MHz, 2.4 GFLOPS", 82, C_COL);
+      text(x0, 186, "FlameCore   tile renderer 200 MHz, 2 pipes, 4 TMU", 82, C_COL);
+      text(x0, 206, "SnowPaula   DSP 100 MHz, 64 voices, 48 kHz", 82, C_COL);
+      text(x0, 226, "Memory      64 MB DDR, 32 MB VRAM, 4 MB ARAM", 82, C_COL);
+      ksprintf(buf, "SnowOS Native   up %d:%02d   heap %d KB", (int)(os_ticks() / 60000), (int)((os_ticks() / 1000) % 60), (int)(os_heap_free() / 1024)); text(x0, 252, buf, 88, C_ICE);
+      text(x0, 284, "STORAGE", 100, C_EMB);
+      fmt_size(sz, REG(DVD_BASE + DVD_CAPACITY) * 2048u); ksprintf(buf, "Disc      SnowFS, %d files, %s", fs_count(), sz); text(x0, 308, buf, 82, C_COL);
+      if (mc_ok) ksprintf(buf, "SnowCard  A: %d KB, %d of %d blocks used", (int)(REG(MCARD_BASE + MC_CAPACITY) / 2), mc_used, mc_nb); else ksprintf(buf, "SnowCard  not inserted");
+      text(x0, 328, buf, 82, C_COL);
+      ksprintf(buf, "Pads      %d connected", pd_on[0] + pd_on[1] + pd_on[2] + pd_on[3]); text(x0, 348, buf, 82, C_COL);
+      ksprintf(buf, "Dashboard 2.1   %d boot%s recorded", boot_count, boot_count == 1 ? "" : "s"); text(x0, 380, buf, 82, C_DIM);
+    } else if (sys_page == 1) {
       pv[0] = st_cpu; pv[1] = st_vpua; pv[2] = st_vpub; pv[3] = st_gpu; pv[4] = st_dsp;
-      for (i = 0; i < 5; i++) { text(x0, y + 168 + i * 24, nm[i], 90, dim); ksprintf(buf, "%d%%", pv[i]); text(x0 + 252, y + 168 + i * 24, buf, 90, col); } }
-    ksprintf(buf, "VPU DMA %d KB/frame  Blitter %d sprites  %d tris", st_dma, st_spr, st_tris); text(x0, y + 292, buf, 78, dim);
+      text(x0, 146, "LIVE ACTIVITY", 100, C_EMB);
+      { const char *nm[5]; nm[0] = "SnowFire"; nm[1] = "Vector A"; nm[2] = "Vector B"; nm[3] = "FlameCore"; nm[4] = "SnowPaula";
+        for (i = 0; i < 5; i++) { text(x0, 172 + i * 24, nm[i], 90, C_DIM); ksprintf(buf, "%d%%", pv[i]); text(x0 + 252, 172 + i * 24, buf, 90, C_COL); } }
+      ksprintf(buf, "VPU DMA %d KB/frame  Blitter %d sprites  %d tris", st_dma, st_spr, st_tris); text(x0, 298, buf, 78, C_DIM);
+      text(x0, 322, "FRAME LOAD", 88, C_EMB);
+    } else {
+      int p, k;
+      for (p = 0; p < 4; p++) {
+        int py = 146 + p * 62;
+        ksprintf(buf, "Pad %d", p + 1); text(x0, py, buf, 100, pd_on[p] ? C_WHT : C_DIM);
+        text(x0 + 74, py + 3, pd_on[p] ? "Connected" : "Not connected", 88, pd_on[p] ? C_ICE : C_DIM);
+        if (!pd_on[p]) continue;
+        for (k = 0; k < 12; k++) text_c(x0 + k * 21 + 8, py + 22, lamp_lbl[k], 66, (pd_b[p] & lamp_btn[k]) ? C_WHT : C_DIM);
+        ksprintf(buf, "L %d,%d   R %d,%d   LT %d  RT %d", (int)(pd_a[p] >> 24), (int)((pd_a[p] >> 16) & 255), (int)((pd_a[p] >> 8) & 255), (int)(pd_a[p] & 255), (int)((pd_t[p] >> 8) & 255), (int)(pd_t[p] & 255));
+        text(x0, py + 42, buf, 76, C_DIM);
+      }
+    }
   } else if (panel_item == 3) {
-    ksprintf(buf, "SnowFS disc   %d sectors  (%d KB)", (int)REG(DVD_BASE + DVD_CAPACITY), (int)(REG(DVD_BASE + DVD_CAPACITY) * 2)); text(x0, y, buf, 100, col);
-    ksprintf(buf, "%d files", fs_count()); text(x0, y + 24, buf, 100, ice);
-    for (i = 0; i < fs_count() && i < 12; i++) { ksprintf(buf, "%s", fs_name(i)); text(x0 + 8, y + 54 + i * 20, buf, 86, dim); }
+    int nf = fs_count();
+    fmt_size(sz, REG(DVD_BASE + DVD_CAPACITY) * 2048u); ksprintf(buf, "SnowFS disc   %d sectors  (%s)", (int)REG(DVD_BASE + DVD_CAPACITY), sz); text(x0, y - 4, buf, 100, C_COL);
+    ksprintf(buf, "%d files", nf); text(x0, y + 22, buf, 100, C_ICE);
+    for (i = 0; i < D_ROWS && dtop + i < nf; i++) {
+      int f = dtop + i, ry = 172 + i * 19;
+      scpy(buf, fs_name(f), 29); text(x0 + 8, ry, buf, 86, f == dsel ? C_WHT : C_DIM);
+      fmt_size(sz, fs_size_at(f)); text(xe - 6 - text_w(sz, 80), ry + 1, sz, 80, f == dsel ? C_ICE : C_DIM);
+    }
+    if (nf > 0) text(x0, 398, fs_name(dsel), 80, C_DIM);
+  } else if (panel_item == 4) {
+    for (i = 0; i < NSET; i++) text(x0, y + i * 38 + 2, set_name[i], 115, set_sel == i ? C_WHT : C_DIM);
+    ksprintf(buf, "%d%%", vol * 100 / 256); text(x0 + 238, y + 2, buf, 100, C_COL);
+    text(x0 + 238, y + 40, music_on ? "On" : "Off", 110, music_on ? C_EMB : C_DIM);
+    text(x0 + 238, y + 78, "Play", 110, C_ICE);
+    text(x0 + 238, y + 116, fx_name[fx_level], 110, fx_level == 0 ? C_EMB : C_DIM);
+    text(x0 + 238, y + 154, intro_on ? "On" : "Off", 110, intro_on ? C_EMB : C_DIM);
+    text(x0 + 238, y + 192, "Reset", 110, C_ICE);
+    text(x0, 364, set_help[set_sel][0], 86, C_DIM); text(x0, 382, set_help[set_sel][1], 86, C_DIM);
+    if (mc_ok) text(x0, 410, "Saved on the SnowCard.", 82, C_ICE); else text(x0, 410, "No SnowCard: settings are not saved.", 82, C_EMB);
   } else {
-    ksprintf(buf, "Volume"); text(x0, y + 2, buf, 115, set_sel == 0 ? 0xFFFFFFFFu : dim);
-    ksprintf(buf, "%d%%", vol * 100 / 256); text(x0 + 238, y + 2, buf, 100, col);
-    text(x0, y + 46, "Ambient music", 115, set_sel == 1 ? 0xFFFFFFFFu : dim); text(x0 + 238, y + 46, music_on ? "On" : "Off", 110, music_on ? ember : dim);
-    text(x0, y + 90, "Sound test", 115, set_sel == 2 ? 0xFFFFFFFFu : dim); text(x0 + 238, y + 90, "Play", 110, ice);
-    text(x0, y + 150, "Pad: SnowPaula event sequencer + reverb", 86, dim);
-    text(x0, y + 168, "Bell: 5-partial sample pitched per voice", 86, dim);
+    static const char *kl[5] = { "Move", "Confirm", "Back", "Page", "In a game" };
+    static const char *kv[5] = { "D-pad  /  Arrow keys", "A  /  Start  /  Enter  /  Space", "B  /  Esc  /  Backspace", "L  R  /  Q  E  /  PgUp  PgDn", "Select / Esc returns here" };
+    text(x0, y - 4, "CONTROLS", 100, C_EMB);
+    for (i = 0; i < 5; i++) { text(x0, y + 22 + i * 22, kl[i], 90, C_DIM); text(x0 + 92, y + 22 + i * 22, kv[i], 90, C_COL); }
+    text(x0, 276, "ABOUT", 100, C_EMB);
+    text(x0, 300, "SnowFlame Dashboard 2.1", 105, C_WHT);
+    text(x0, 324, "AMIGA SnowFlame SF-100  -  SnowOS Native", 88, C_ICE);
+    ksprintf(buf, "%d game%s   %d files on the disc", ngames, ngames == 1 ? "" : "s", fs_count()); text(x0, 348, buf, 82, C_DIM);
   }
 }
 
+/* mapa de blocos do cartão (32 x 8 células): guardado num buffer próprio e acrescentado aos poucos (a "varredura" que o painel mostra);
+ * as posições valem para o painel parado, então só aparece depois que ele terminou de deslizar */
+#define A_MAPVB 0x018C0000
+static int map_n;
+static void map_draw(void) {
+  int upto = imin(mc_scan_pos, map_n + 16), i;
+  if (panel_f < 256 || !mc_ok) return;
+  if (upto > map_n) {
+    unsigned *svb = VB, *svp = vp; int svn = vn;
+    VB = (unsigned *)A_MAPVB; vp = VB + map_n * 72; vn = map_n * 6;
+    for (i = map_n; i < upto; i++) {
+      int k = mc_kind[i], cx = PX0 + 30 + (i & 31) * 8, cy = 150 + (i >> 5) * 8;
+      quadc(cx * 4, cy * 4, (cx + 6) * 4, (cy + 6) * 4, k == 0 ? 0x70305890u : k == 1 ? 0xFF8ED8FFu : k == 2 ? 0xFFFFA040u : 0xFFE8F0FFu);
+    }
+    os_cache_flush((unsigned)A_MAPVB + (unsigned)map_n * 288, (unsigned)(upto - map_n) * 288);
+    VB = svb; vp = svp; vn = svn; map_n = upto;
+  }
+  if (map_n > 0) ui_ext(A_MAPVB, 0, map_n * 6, ST_BLEND, BF_SRC_ALPHA, BF_INV_SRC_ALPHA, 0, 0, 0, 0);
+}
+
+/* confirmação sobre o painel (apagar um save): vidro fosco com duas cápsulas; a seleção começa em "Cancel" */
+static void dialog_draw(int ox) {
+  int a = dlg_f, x0 = PX0 + ox + 30, x1 = PX1 + ox - 30, cx = (x0 + x1) / 2, i; char buf[40];
+  ui_seg(UI_ALPHA); quadc((PX0 + ox) * 4, PY0 * 4, (PX1 + ox) * 4, PY1 * 4, with_alpha(0x020818u, a * 150 >> 8));
+  ui_seg_tex(A_UIT + UI_TEX_PANEL, 6, 6, TF_ARGB8888); nine(x0, 178, x1, 338, 18, with_alpha(0x0A1638u, a * 245 >> 8));
+  ui_seg_tex(A_UIT + UI_TEX_BORDER, 6, 6, TF_ARGB8888); nine(x0, 178, x1, 338, 18, with_alpha(0xFF8A2Au, a * 220 >> 8));
+  ui_seg_tex(A_UIT + UI_TEX_PILL, 8, 6, TF_ARGB8888);
+  for (i = 0; i < 2; i++) {
+    int px = i ? cx + 8 : cx - 112; unsigned c = dlg_sel == i ? 0xFF8A2Au : 0x2A62C8u, c2 = dlg_sel == i ? 0xE04A10u : 0x183C90u;
+    quad4(px * 4, 286 * 4, (px + 104) * 4, 322 * 4, with_alpha(c, a), with_alpha(c, a), with_alpha(c2, a), with_alpha(c2, a), 0, 0, 1024, 1024);
+  }
+  ui_seg_tex(A_UIT + UI_TEX_GLOSS, 8, 6, TF_ARGB8888);
+  for (i = 0; i < 2; i++) { int px = i ? cx + 8 : cx - 112; quad4(px * 4, 286 * 4, (px + 104) * 4, 322 * 4, with_alpha(0xFFFFFFu, a), with_alpha(0xFFFFFFu, a), with_alpha(0xFFFFFFu, a), with_alpha(0xFFFFFFu, a), 0, 0, 1024, 1024); }
+  ui_seg_tex(A_FONT, 8, 7, TF_A8);
+  text_c(cx, 196, "Delete this save?", 130, with_alpha(0xFFFFFFu, a));
+  { int b = mc_list[mc_sel], k = mc_kind[b]; if (k == 2) ksprintf(buf, "SnowRoids high score"); else ksprintf(buf, "Unknown data (block %d)", b); text_c(cx, 232, buf, 100, with_alpha(0x8ED8FFu, a)); }
+  text_c(cx, 258, "This cannot be undone.", 86, with_alpha(0x9FC8F0u, a));
+  text_c(cx - 60, 295, "Cancel", 110, with_alpha(0xFFFFFFu, a)); text_c(cx + 60, 295, "Delete", 110, with_alpha(0xFFFFFFu, a));
+}
+
 /* ------------------------------ renderização de um quadro ------------------------------ */
+static void item_status(int i, char *b) {                         /* linha viva sob o título do item selecionado */
+  char sz[24];
+  if (i == 0) { if (ngames) ksprintf(b, "%d game%s on disc", ngames, ngames == 1 ? "" : "s"); else ksprintf(b, "No games on this disc"); }
+  else if (i == 1) { if (mc_ok) ksprintf(b, "SnowCard A  -  %d of %d blocks used", mc_used, mc_nb); else ksprintf(b, "No SnowCard in slot A"); }
+  else if (i == 2) ksprintf(b, "Up %d:%02d  -  frame load %d%%", (int)(os_ticks() / 60000), (int)((os_ticks() / 1000) % 60), st_cpu);
+  else if (i == 3) { fmt_size(sz, REG(DVD_BASE + DVD_CAPACITY) * 2048u); ksprintf(b, "%d files  -  %s", fs_count(), sz); }
+  else ksprintf(b, "Volume %d%%  -  Music %s  -  Effects %s", vol * 100 / 256, music_on ? "on" : "off", fx_name[fx_level]);
+}
 static void render(unsigned rt) {
   int i, mf = menu_f, pf = panel_f, ox = (256 - pf) * 360 / 256;
   ui_begin();
@@ -481,20 +803,22 @@ static void render(unsigned rt) {
   { int r = emb_s * 260 >> 16, r2 = emb_s * 130 >> 16, g = state == ST_BOOT ? imin(255, boot_t * 3) : 255;
     glow_cached(0, emb_x, emb_y, r, r, 0x2060C0, g * 120 >> 8); glow_cached(1, emb_x, emb_y, r2, r2, 0xFF7020, g * 110 >> 8); }
   /* saídas das VPUs */
-  ui_ext(A_POUT, 0, NSNOW * 6, ST_BLEND | ST_TEX0 | ST_BILINEAR, BF_SRC_ALPHA, BF_ONE, A_UIT + UI_TEX_FLAKE, 6, 6, TF_ARGB8888);
+  if (n_snow > 0) ui_ext(A_POUT, 0, n_snow * 6, ST_BLEND | ST_TEX0 | ST_BILINEAR, BF_SRC_ALPHA, BF_ONE, A_UIT + UI_TEX_FLAKE, 6, 6, TF_ARGB8888);
   ui_ext(A_VOUT, out_ring1, part_count[2] * 2, ST_DEPTH_TEST | ST_DEPTH_WRITE, BF_ONE, BF_ZERO, 0, 0, 0, 0);
   ui_ext(A_VOUT, out_flame, part_count[0], ST_DEPTH_TEST | ST_BLEND, BF_SRC_ALPHA, BF_ONE, 0, 0, 0, 0);
   ui_ext(A_VOUT, out_crystal, part_count[1], ST_DEPTH_TEST | ST_BLEND, BF_SRC_ALPHA, BF_ONE, 0, 0, 0, 0);   /* gelo que brilha: aditivo */
-  ui_ext(A_POUT, NSNOW * 6, NEMB * 6, ST_BLEND | ST_TEX0 | ST_BILINEAR, BF_SRC_ALPHA, BF_ONE, A_UIT + UI_TEX_GLOW, 6, 6, TF_ARGB8888);
-  st_tris = (part_count[0] + part_count[1] + part_count[2] * 2) / 3 + (NSNOW + NEMB) * 2;
-  if (state == ST_BOOT) {                                        /* logotipo do boot: "AMIGA" em brasa, SNOWFLAME em gelo */
-    int out = boot_t > 168 ? imax(0, 255 - (boot_t - 168) * 9) : 255;
-    int a = boot_t < 120 ? 0 : imin(out, (boot_t - 120) * 5), b = boot_t < 100 ? 0 : imin(out, (boot_t - 100) * 5), c = boot_t < 140 ? 0 : imin(out, (boot_t - 140) * 6);
-    ui_seg_tex(A_LOGO, 9, 6, TF_A8);
-    quad4(64 * 4, 372 * 4, 576 * 4, 436 * 4, with_alpha(0xFFFFFF, a), with_alpha(0xFFFFFF, a), with_alpha(0x9FD8FF, a), with_alpha(0x9FD8FF, a), 0, 0, 1024, 1024);
-    ui_seg_tex(A_FONT, 8, 7, TF_A8);
-    text_c(SW / 2, 346, "A  M  I  G  A", 150, with_alpha(0xFFB070, b));
-    text_c(SW / 2, 446, "SF-100   -   SnowOS", 95, with_alpha(0x8FB8E8, c));
+  if (n_emb > 0) ui_ext(A_POUT, NSNOW * 6, n_emb * 6, ST_BLEND | ST_TEX0 | ST_BILINEAR, BF_SRC_ALPHA, BF_ONE, A_UIT + UI_TEX_GLOW, 6, 6, TF_ARGB8888);
+  st_tris = (part_count[0] + part_count[1] + part_count[2] * 2) / 3 + (n_snow + n_emb) * 2;
+  if (state == ST_BOOT) {                                        /* logotipo do boot: "AMIGA" em brasa, SNOWFLAME em gelo (some na abertura curta) */
+    if (boot_logo) {
+      int out = boot_t > 168 ? imax(0, 255 - (boot_t - 168) * 9) : 255;
+      int a = boot_t < 120 ? 0 : imin(out, (boot_t - 120) * 5), b = boot_t < 100 ? 0 : imin(out, (boot_t - 100) * 5), c = boot_t < 140 ? 0 : imin(out, (boot_t - 140) * 6);
+      ui_seg_tex(A_LOGO, 9, 6, TF_A8);
+      quad4(64 * 4, 372 * 4, 576 * 4, 436 * 4, with_alpha(0xFFFFFF, a), with_alpha(0xFFFFFF, a), with_alpha(0x9FD8FF, a), with_alpha(0x9FD8FF, a), 0, 0, 1024, 1024);
+      ui_seg_tex(A_FONT, 8, 7, TF_A8);
+      text_c(SW / 2, 346, "A  M  I  G  A", 150, with_alpha(0xFFB070, b));
+      text_c(SW / 2, 446, "SF-100   -   SnowOS", 95, with_alpha(0x8FB8E8, c));
+    }
     ui_end(rt, 0x00000000u);
     return;
   }
@@ -530,6 +854,7 @@ static void render(unsigned rt) {
     ui_seg_tex(A_UIT + UI_TEX_GLOSS, 8, 6, TF_ARGB8888);
     quad4((PX0 + ox + 8) * 4, (PY0 + 4) * 4, (PX1 + ox - 8) * 4, (PY0 + 40) * 4, with_alpha(0xFFFFFF, pf * 120 >> 8), with_alpha(0xFFFFFF, pf * 120 >> 8), with_alpha(0xFFFFFF, pf * 120 >> 8), with_alpha(0xFFFFFF, pf * 120 >> 8), 0, 0, 1024, 1024);
     ui_seg(UI_ALPHA); panel_shapes(ox);
+    if (panel_item == 1) map_draw();
     ui_seg_tex(A_ICONS, 9, 6, TF_ARGB4444);
     quad4((PX0 + ox + 22) * 4, (PY0 + 11) * 4, (PX0 + ox + 56) * 4, (PY0 + 45) * 4, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, panel_item * 128, 0, panel_item * 128 + 128, 1024);
   }
@@ -538,29 +863,77 @@ static void render(unsigned rt) {
     int ofs = (256 - mf) * 300 / 256 + pf * 340 / 256;
     for (i = 0; i < N_ITEMS; i++) text(444 + ofs - (i == sel ? sel_f : 0), pill_y(i) + 17, item_name[i], 135, with_alpha(0xFFFFFF, mf * (i == sel ? 255 : 215) >> 8));
     { int a = mf * (256 - pf) >> 8;
-      text_c(emb_x, 392, item_name[sel], 175, with_alpha(0xFFFFFF, a)); text_c(emb_x, 420, item_desc[sel], 92, with_alpha(0x9FC8F0, a)); }
+      char sb[64]; item_status(sel, sb);
+      text_c(emb_x, 374, item_name[sel], 175, with_alpha(0xFFFFFF, a)); text_c(emb_x, 402, item_desc[sel], 92, with_alpha(0x9FC8F0, a));
+      text_c(emb_x, 424, sb, 84, with_alpha(0x8ED8FF, a * 3 / 4)); }
   }
   if (pf > 0) panel_text(ox);
+  if (dlg_f > 0) dialog_draw(ox);
   ui_end(rt, 0x00000000u);
 }
 
 /* ------------------------------ lógica ------------------------------ */
-static void scan_games(void) {
-  int i, n = fs_count(); ngames = 0;
-  for (i = 0; i < n && ngames < 8; i++) {
-    const char *f = fs_name(i); int len = 0, k;
-    if (f[0] != 'g' || f[1] != 'a' || f[2] != 'm' || f[3] != 'e' || f[4] != 's' || f[5] != '/') continue;
-    while (f[len]) len++;
-    if (len < 11 || f[len - 4] != '.' || f[len - 3] != 'b') continue;
-    for (k = 6; k < len - 4 && k - 6 < 23; k++) gname[ngames][k - 6] = f[k];
-    gname[ngames][k - 6] = 0; ngames++;
-  }
-}
 static void launch_game(int g) {
   char path[48]; ksprintf(path, "games/%s.bin", gname[g]);
   os_printf("[menu] iniciando %s\n", path);
   music_stop();
+  scpy(last_game, gname[g], 24); settings_store();                 /* lembra o último jogo (e grava de uma vez os ajustes pendentes) */
   os_reboot(path);
+}
+static void open_panel(int item) {
+  int g;
+  panel_item = item; list_sel = 0; list_top = 0; set_sel = 0; dsel = 0; dtop = 0; mc_sel = 0; mc_top = 0; sys_page = 0; dlg = 0; map_n = 0; state = ST_PANEL;
+  if (item == 0) { for (g = 0; g < ngames; g++) if (game_is_last(g)) list_sel = g; list_top = imax(0, list_sel - G_ROWS + 1); }
+}
+static void list_nav(int *cur, int *top, int n, int rows, unsigned nk) {   /* cima/baixo (e L/R: uma página) com a janela de 'rows' linhas seguindo a seleção */
+  int c = *cur;
+  if ((nk & K_UP) && c > 0) c--;
+  if ((nk & K_DOWN) && c < n - 1) c++;
+  if ((nk & K_L) && c > 0) c = imax(0, c - rows + 1);
+  if ((nk & K_R) && c < n - 1) c = imin(n - 1, c + rows - 1);
+  if (c != *cur) { *cur = c; sfx(SND_TICK); }
+  if (c < *top) *top = c;
+  if (c >= *top + rows) *top = c - rows + 1;
+  *top = imax(0, imin(*top, n - rows));
+}
+static void settings_input(unsigned nk) {
+  int d = ((nk & K_RIGHT) ? 1 : 0) - ((nk & K_LEFT) ? 1 : 0);
+  if ((nk & K_UP) && set_sel > 0) { set_sel--; sfx(SND_TICK); }
+  if ((nk & K_DOWN) && set_sel < NSET - 1) { set_sel++; sfx(SND_TICK); }
+  if (set_sel == 0 && d) { vol = imax(0, imin(256, vol + d * 16)); vol_set = 1; snd_master(vol); sfx(SND_TICK); set_dirty = 90; }
+  else if (set_sel == 1 && (nk & (K_OK | K_LEFT | K_RIGHT))) { music_on = !music_on; if (music_on) music_start(); else music_stop(); sfx(SND_OPEN); set_dirty = 90; }
+  else if (set_sel == 2 && (nk & K_OK)) { bell(8, 72, -8); bell(9, 79, 0); bell(10, 84, 8); }
+  else if (set_sel == 3 && (d || (nk & K_OK))) { fx_level = (fx_level + (d < 0 ? 2 : 1)) % 3; fx_apply(); sfx(SND_TICK); set_dirty = 90; }
+  else if (set_sel == 4 && (nk & (K_OK | K_LEFT | K_RIGHT))) { intro_on = !intro_on; sfx(SND_TICK); set_dirty = 90; }
+  else if (set_sel == 5 && (nk & K_OK)) {                          /* volume 200 e mestre 256 = como o console sai de fábrica */
+    vol = 200; vol_set = 0; snd_master(256); fx_level = 0; fx_apply(); intro_on = 1;
+    if (!music_on) { music_on = 1; music_start(); }
+    sfx(SND_OPEN); set_dirty = 90;
+  }
+}
+static void dialog_input(unsigned nk) {                            /* confirmação de apagar um save */
+  if (nk & (K_LEFT | K_RIGHT)) { dlg_sel = !dlg_sel; sfx(SND_TICK); }
+  if (nk & K_BACK) { dlg = 0; sfx(SND_BACK); }
+  else if (nk & K_OK) {
+    if (dlg_sel == 1) {
+      mc_delete(mc_sel); map_n = 0;
+      mc_sel = imax(0, imin(mc_sel, mc_n - 1)); mc_top = imax(0, imin(mc_top, mc_n - M_ROWS));
+    }
+    dlg = 0; sfx(SND_BACK);
+  }
+}
+static void panel_input(unsigned nk) {
+  if (panel_item == 0) {
+    list_nav(&list_sel, &list_top, ngames, G_ROWS, nk);
+    if ((nk & K_OK) && ngames > 0) { sfx(SND_OPEN); launch_game(list_sel); }
+  } else if (panel_item == 1) {
+    list_nav(&mc_sel, &mc_top, mc_n, M_ROWS, nk);
+    if ((nk & K_OK) && mc_deletable()) { dlg = 1; dlg_sel = 0; sfx(SND_OPEN); }
+  } else if (panel_item == 2) {
+    if ((nk & (K_LEFT | K_L)) && sys_page > 0) { sys_page--; sfx(SND_TICK); }
+    if ((nk & (K_RIGHT | K_R)) && sys_page < 2) { sys_page++; sfx(SND_TICK); }
+  } else if (panel_item == 3) list_nav(&dsel, &dtop, fs_count(), D_ROWS, nk);
+  else if (panel_item == 4) settings_input(nk);
 }
 static void update(unsigned nk) {
   if (state == ST_BOOT) {
@@ -575,30 +948,22 @@ static void update(unsigned nk) {
       state = ST_MENU; emb_s = 47000; emb_x = 190; emb_y = 226; sky_fade = 256;
       if (t < 150 && music_on) music_start();
       REG(VIDEO_BASE + VID_LAYER0 + VID_LAYER_STRIDE + LR_FLAGS) = LF_ENABLE;
+      if (warm && ngames > 0) { sel = 0; open_panel(0); }          /* de volta de um jogo: GAMES já no último jogado */
     }
     return;
   }
   spin += 3; menu_f = ease(menu_f, state == ST_MENU ? 256 : 0, 5); panel_f = ease(panel_f, state == ST_PANEL ? 256 : 0, 5); sel_f = ease(sel_f, 18, 4);
+  dlg_f = ease(dlg_f, dlg ? 256 : 0, 4);
   emb_x = ease(emb_x, state == ST_PANEL ? 150 : 190, 6);
   if (state == ST_MENU) {
     if ((nk & K_UP) && sel > 0) { sel--; sel_f = 0; sfx(SND_TICK); }
     if ((nk & K_DOWN) && sel < N_ITEMS - 1) { sel++; sel_f = 0; sfx(SND_TICK); }
-    if (nk & K_OK) { panel_item = sel; list_sel = 0; set_sel = 0; if (sel == 0) scan_games(); state = ST_PANEL; sfx(SND_OPEN); }
-  } else {
-    if (nk & K_BACK) { state = ST_MENU; sfx(SND_BACK); }
-    else if (panel_item == 0) {
-      if ((nk & K_UP) && list_sel > 0) { list_sel--; sfx(SND_TICK); }
-      if ((nk & K_DOWN) && list_sel < ngames - 1) { list_sel++; sfx(SND_TICK); }
-      if ((nk & K_OK) && ngames > 0) { sfx(SND_OPEN); launch_game(list_sel); }
-    } else if (panel_item == 4) {
-      if ((nk & K_UP) && set_sel > 0) { set_sel--; sfx(SND_TICK); }
-      if ((nk & K_DOWN) && set_sel < 2) { set_sel++; sfx(SND_TICK); }
-      if (set_sel == 0 && (nk & K_LEFT)) { vol = imax(0, vol - 16); snd_master(vol); sfx(SND_TICK); }
-      if (set_sel == 0 && (nk & K_RIGHT)) { vol = imin(256, vol + 16); snd_master(vol); sfx(SND_TICK); }
-      if (set_sel == 1 && (nk & (K_OK | K_LEFT | K_RIGHT))) { music_on = !music_on; if (music_on) music_start(); else music_stop(); sfx(SND_OPEN); }
-      if (set_sel == 2 && (nk & K_OK)) { bell(8, 72, -8); bell(9, 79, 0); bell(10, 84, 8); }
-    }
-  }
+    if (nk & K_OK) { open_panel(sel); sfx(SND_OPEN); }
+    else if (nk & K_BACK) { open_panel(PANEL_INFO); sfx(SND_OPEN); }
+  } else if (dlg) dialog_input(nk);
+  else if (nk & K_BACK) { state = ST_MENU; sfx(SND_BACK); }
+  else panel_input(nk);
+  if (state == ST_PANEL && panel_item == 2) read_pads();
 }
 static void stats_update(unsigned busy_ns) {                   /* carga de cada chip no quadro (média lenta) */
   unsigned va = REG(VPUA_BASE + VPU_TOTAL_CYCLES), vb = REG(VPUB_BASE + VPU_TOTAL_CYCLES), dm = REG(VPUA_BASE + VPU_DMA_BYTES) + REG(VPUB_BASE + VPU_DMA_BYTES);
@@ -608,6 +973,7 @@ static void stats_update(unsigned busy_ns) {                   /* carga de cada 
   st_cpu = acc_cpu / 64; st_vpua = acc_vpua / 64; st_vpub = acc_vpub / 64; st_gpu = acc_gpu / 64;
   st_dma = (int)((dm - last_dma) / 1024); last_dma = dm;
   if ((tick & 31) == 0) { st_dsp = (int)(REG(PAULA_BASE + PA_DSP_LOAD) / 10); REG(PAULA_BASE + PA_DSP_DROPS) = 0; }
+  if (tick % 6 == 0) { hist[hist_i] = (unsigned char)st_cpu; hist_i = (hist_i + 1) % NHIST; }
 }
 
 /* ------------------------------ inicialização ------------------------------ */
@@ -633,19 +999,26 @@ static void load_assets(void) {
   gx_layer(1, HUD0, SW * 4, 0);
   particles_init();
   REG(COP_BASE + COP_LIST) = A_COP; copper_sky(A_COP); REG(COP_BASE + COP_CTRL) = 1;
+  n = fs_load("sys/games.inf", ginfo, sizeof ginfo - 1); ginfo[n > 0 ? n : 0] = 0;   /* títulos e descrições dos jogos (opcional) */
+  scan_games();
 }
 
 void app_main(void) {
   unsigned t0;
+  warm = seq((const char *)SRAM_BASE, "boot/menu.bin"); REG8(SRAM_BASE) = 0;   /* um jogo que volta pelo IPL deixa o caminho do menu aqui: abertura curta e GAMES de volta */
   load_assets(); mc_boot_counter();
   state = ST_BOOT; emb_x = 320; emb_y = 210;
+  if (warm || !intro_on) { boot_t = 149; boot_logo = 0; emb_s = 55700; emb_y = 190; }   /* pula direto para o emblema deslizando para o menu */
   os_printf("[menu] SnowFlame Dashboard iniciado (boots no cartao: %d)\n", boot_count);
-  os_printf("[menu] emblema: %d vertices em jobs de VPU-A; %d particulas na DMEM da VPU-B\n", part_count[0] + part_count[1] + part_count[2] * 2, NSNOW + NEMB);
+  os_printf("[menu] emblema: %d vertices em jobs de VPU-A; %d particulas na DMEM da VPU-B\n", part_count[0] + part_count[1] + part_count[2] * 2, n_snow + n_emb);
+  os_printf("[menu] %s; ajustes: volume %d musica %d efeitos %d abertura %d; %d jogos\n", warm ? "retorno de jogo" : "partida a frio", vol, music_on, fx_level, intro_on, ngames);
   for (;;) {
-    unsigned k = read_keys(), nk = k & ~keys_prev, rt = back ? RT1 : RT0, hud = back ? HUD1 : HUD0, cop = A_COP + (back ? 0x2000u : 0u);
+    unsigned k = read_keys(), nk = key_edges(k), rt = back ? RT1 : RT0, hud = back ? HUD1 : HUD0, cop = A_COP + (back ? 0x2000u : 0u);
     t0 = REG(BRIDGE_BASE + BR_TIME_LO);
     keys_prev = k;
     update(nk);
+    if (mc_ok && mc_scan_pos < mc_nb) mc_scan_step(8);
+    if (set_dirty && --set_dirty == 0) settings_store();
     emblem_submit(); particles_submit();          /* 1-2: as VPUs começam enquanto a CPU monta o resto */
     copper_sky(cop);
     vpus_wait();

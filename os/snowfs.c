@@ -51,6 +51,7 @@ int fs_mount(void) {
 
 int fs_count(void) { return fs_nfiles; }
 const char *fs_name(int i) { return (i >= 0 && i < fs_nfiles) ? fs_dir[i].name : NULL; }
+unsigned fs_size_at(int i) { return (i >= 0 && i < fs_nfiles) ? fs_dir[i].size : 0; }
 
 int fs_open(const char *path) {
   int i, h = -1;

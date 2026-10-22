@@ -100,7 +100,7 @@ Sequenciador por eventos de 16 bytes (tempo em amostras, voz, registrador, valor
 `HID_BASE = 0xF00F0000`, IRQ bit 15. Teclado: FIFO de 64 eventos (`HID_KEY_DATA` = usage USB | `HID_KEY_UP` | mods<<16, `0xFFFFFFFF` se vazia); mouse: `HID_MOUSE_DX/DY/WHEEL` acumulam e zeram na leitura, `HID_MOUSE_BTN`.
 O host injeta eventos com `Soc::hid.key_event/mouse_move/mouse_button/mouse_wheel`. SnowFS: formato do DVD descrito em `src/abi.h` (`SFFS_*`); `sffs_build` (`src/sffs.h`) gera a imagem.
 
-`MMU_CTRL` bit 1 = supervisor sem tradução (kernel não precisa de páginas mapeadas); com a MMU ligada, a CPU restaura os registradores ao tomar erro de acesso, tornando a instrução reiniciável.
+`MMU_CTRL` bit 1 = supervisor sem tradução (kernel não precisa de páginas mapeadas); com a MMU ligada, a CPU restaura os registradores ao tomar erro de acesso, tornando a instrução reiniciável; depois do primeiro erro de acesso de uma instrução (busca de uma palavra de extensão em página sem TLB inclusive) nenhuma escrita dela chega à memória.
 
 `ST_ATEST` (GPU): descarta pixels com alfa < 128 depois do sombreamento (antes de Z/cor), para cercas, grades e folhagem sem ordenação.
 

@@ -50,6 +50,22 @@ TEST(mmu_access_crossing_a_page_translates_each_page) {
   CHECK(s.bus.fault); CHECK_EQ(s.bus.mmu_fsr & 3, 2); CHECK_EQ(s.bus.ddr[0x80FFE], 0);
 }
 
+// Palavra de extensão numa página sem tradução: a busca falha e devolve 0, e ADDQ #1,-4(A6) (ext. FFFC) enxergava d16 = 0 e gravava em (A6)
+// antes do reinício (no Dashboard isso incrementava o A6 salvo na pilha). Com o erro de acesso sinalizado nada pode ser gravado.
+TEST(a_fetch_fault_on_the_extension_word_writes_nothing_before_the_restart) {
+  Soc s; s.bus.cache_enabled = false;
+  s.bus.tlb[0] = {true, 0x40, 0x80, MP_R | MP_X}; s.bus.tlb[1] = {true, 0x50, 0xA0, MP_R | MP_W};    // código em 0x40000 (a página 0x41000 não tem tradução); dados em 0x50000
+  s.bus.mmu_on = true;
+  s.bus.raw_w16(0x80FFE, 0x52AE);                                                  // addq.l #1,-4(a6): opcode em 0x40FFE, extensão em 0x41000
+  s.bus.raw_w32(0xA0000, 0x11111111); s.bus.raw_w32(0xA0004, 0x22222222);
+  s.bus.raw_w32(0x2008, 0x3000);                                                   // vetor 2 (erro de acesso) -> 0x3000
+  s.cpu.reset_regs(); s.cpu.sr = 0x0000; s.cpu.vbr = 0x2000; s.cpu.other_sp = 0x00F00000; s.cpu.a[7] = 0x60000; s.cpu.a[6] = 0x50004; s.cpu.set_pc(0x40FFE);
+  s.cpu.step();
+  CHECK_EQ(s.cpu.exc_vec, 2); CHECK_EQ(s.cpu.exc_pc, 0x40FFEu); CHECK_EQ(s.cpu.pc, 0x3000u);       // reiniciável: a instrução volta a começar em 0x40FFE
+  CHECK_EQ(s.cpu.a[6], 0x50004u);
+  CHECK_EQ(s.bus.raw_r32(0xA0000), 0x11111111u); CHECK_EQ(s.bus.raw_r32(0xA0004), 0x22222222u);   // nem (A6-4) nem (A6) foram tocados
+}
+
 // ---- modelo de ciclos ----
 static u64 cycles_of(A& a) { Soc s; CHECK(run_prog(s, a)); return s.cpu.cycles; }
 

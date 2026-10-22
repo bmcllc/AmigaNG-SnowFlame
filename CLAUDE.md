@@ -20,7 +20,7 @@ make clean                    # remove build/ e out/
 ```
 
 ```
-make dvd                     # monta out/snowflame.dvd (menu + recursos + jogos; GAMES=--game nome=os/apps/games/x.c)
+make dvd                     # monta out/snowflame.dvd (menu + recursos + jogos; GAMES=--game nome=os/apps/games/x.c [--info "nome=Título|Descrição"]); sobrescreve o out/snowflame.dvd existente
 make boot                    # liga o SF-100 no Dashboard sem janela (PNGs em out/boot/)
 make play                    # janela/som/controle; opcional, exige SDL2 e pkg-config (fora de `all`)
 make techdemos               # out/techdemos/ (ver docs/TECHDEMOS.md)
@@ -45,6 +45,7 @@ O Makefile ignora o `CXX` do ambiente e usa g++ (com clang as imagens da demo di
 - **Modelo de tempo: "funcional no kick"** — cada dispositivo executa seu efeito imediatamente quando disparado e agenda o evento de conclusão (com IRQ opcional) após a latência em ciclos. Não é ciclo a ciclo.
 - **`Bus` (`bus.h/.cpp`)**: memórias planas (DDR/VRAM/ARAM/SRAM), despacho de MMIO via `Device::read/write` (`map_device`) e janelas lineares (`add_window`, ex.: IMEM/DMEM das VPUs). Acesso `raw_*` ignora cache/MMIO; `cpu_read/cpu_write` passam pela D-cache (32 KB, write-back, **não coerente** com DMA/VPU/GPU — software precisa de `CACHE_FLUSH/INVAL`), pela MMU de software (TLB) e contam stall. `Bus::reserve` é o árbitro de memória por região que serializa DMA/GPU. **Caminho rápido (só velocidade):** as linhas recentes de busca/leitura/escrita (`LineHint`) valem enquanto `Bus::ep.i`/`ep.d` não avançam; tudo que muda modo (`ModeFlag`), TLB (`TlbArray`: acesso não-const avança a época, o Bus lê pela interface const) ou validade/identidade das linhas das caches (preenchimento, `icache_inval_*`, `cache_*_range`) precisa avançar a época — ao adicionar um novo ponto que escreve nesse estado, avance-a.
 - **CPU (`cpu_cf.*`)**: interpretador ColdFire com FPU double e EMAC_B com a codificação do CFPRM rev. 3 (`cpu_cf.cpp`: `emac_*`; `cfasm.h`: `mac_*`). `src/cfasm.h` é um montador in-process usado por testes e demo.
+  Com a MMU ligada o erro de acesso é reiniciável: a CPU restaura os registradores e, desde o 1º erro de acesso da instrução, `Cpu::wr` não grava mais (uma palavra de extensão em página sem TLB é lida como 0 e a instrução seguia gravando no EA errado); `rtl/sf_cpu.sv` espelha.
 - **VPU (`vpu.*`)**: SIMD FP32×4 com ISA de 32 bits própria; `vpu_assemble`/`vpu_disasm` em texto.
 - **GPU (`flamecore.*`, `texutil.h`)**: renderizador por tiles 32×32 acionado por lista de comandos (`GC_*`). DXT1 usa palavras big-endian (desvio documentado).
 - **`chipset.*`** = Blitter, Copper, Video; **`paula.*`** = áudio (+`adpcm.h`); **`periph.*`** = MMU, Timers, DVD, MemCard, Pads.

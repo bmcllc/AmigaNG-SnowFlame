@@ -67,7 +67,9 @@ package sf_cpu_pkg;
   function u32_t fetch(); u32_t w; w = 32'(fab_fetch16(h, pc, sup())); pc += 2; return w; endfunction
   function u32_t fetch32(); u32_t hi; hi = fetch(); return (hi << 16) | fetch(); endfunction
   function u32_t rd(u32_t ad, int sz); cyc++; return fab_cpu_rd(h, ad, sz, int'(sup())); endfunction
-  function void wr(u32_t ad, int sz, u32_t v); cyc++; fab_cpu_wr(h, ad, sz, v, int'(sup())); endfunction
+  // Com um erro de acesso já sinalizado nesta instrução ela será reiniciada: nada é gravado daí em diante (como em src/cpu_cf.h; sem isso uma
+  // palavra de extensão em página sem TLB, lida como 0, deixava ADDQ #1,d16(A6) incrementar (A6) em vez de d16(A6) antes do reinício).
+  function void wr(u32_t ad, int sz, u32_t v); cyc++; if (fab_busreg(h, BUS_FAULT) == 0) fab_cpu_wr(h, ad, sz, v, int'(sup())); endfunction
   function void push32(u32_t v); a[7] -= 4; wr(a[7], 4, v); endfunction
   function u32_t pop32(); u32_t v; v = rd(a[7], 4); a[7] += 4; return v; endfunction
 

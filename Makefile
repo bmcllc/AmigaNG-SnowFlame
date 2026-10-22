@@ -111,8 +111,8 @@ play: dvd build/sf100_play
 	./build/sf100_play out/snowflame.dvd
 
 # DVD do sistema (menu + recursos + jogos) e boot sem janela
-GAMES ?= --game snowroids=os/apps/games/snowroids.c
-# MORE_GAMES: jogos de fora somados aos de GAMES (--bin nome=imagem.bin --data caminho=arquivo), ex.: o repositório snowflame-ioq3
+GAMES ?= --game snowroids=os/apps/games/snowroids.c --info "snowroids=SnowRoids|An original neon vector shooter"
+# MORE_GAMES: jogos de fora somados aos de GAMES (--bin nome=imagem.bin --data caminho=arquivo --info "nome=Título|Descrição"), ex.: o repositório snowflame-ioq3
 
 dvd: $(B)/sf100_mkdvd os/apps/menu.c $(wildcard os/vx/*.vsm) $(wildcard os/apps/*.h) $(wildcard os/apps/games/*.c) $(wildcard os/*.c) $(wildcard os/include/*.h) $(wildcard assets/*)
 	mkdir -p out && ./$(B)/sf100_mkdvd -o out/snowflame.dvd $(GAMES) $(MORE_GAMES)

@@ -70,7 +70,9 @@ class Cpu {
   template <int SZ, int SM, int DM> void op_move(u16 op);
   template <int G, int M> void exec_t(u16 op);
   u32 rd(u32 a_, int sz) { cyc++; bus.cpu_super = sr & 0x2000; return bus.cpu_read(a_, sz); }
-  void wr(u32 a_, int sz, u32 v) { cyc++; bus.cpu_super = sr & 0x2000; bus.cpu_write(a_, sz, v); }
+  // Com um erro de acesso já sinalizado nesta instrução ela será reiniciada: nada é gravado daí em diante. Sem isso, uma palavra de extensão
+  // em página sem TLB (busca devolve 0) deixava ADDQ #1,d16(A6) incrementar (A6) em vez de d16(A6) antes do reinício (pilha corrompida).
+  void wr(u32 a_, int sz, u32 v) { cyc++; if (bus.fault) return; bus.cpu_super = sr & 0x2000; bus.cpu_write(a_, sz, v); }
   void push32(u32 v) { a[7] -= 4; wr(a[7], 4, v); }
   u32 pop32() { u32 v = rd(a[7], 4); a[7] += 4; return v; }
   void exception(int vec, u32 retpc, int newmask);

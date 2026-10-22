@@ -5,7 +5,7 @@ vídeo (4 camadas), SnowPaula e SnowBridge — e o software em volta: compilador
 SnowOS Classic (CPU 68000 + chipset Amiga OCS/ECS/AGA + tradutor 68k → ColdFire) e ferramentas (depurador, profiler). Sem dependências externas.
 
     make          # biblioteca, testes, demo e ferramentas em build/
-    make test     # ~170 testes (hardware, ISA, texturas, chipset, compilador, SnowOS, Classic, tradutor)
+    make test     # ~210 testes (hardware, ISA, texturas, chipset, compilador, SnowOS, Dashboard, Classic, tradutor)
     make demo     # roda a demo; escreve out/frame_*.ppm e out/audio.wav
     make boot     # monta o DVD do sistema e liga o SF-100 no SnowFlame Dashboard (PNGs em out/boot/)
     make play     # o mesmo numa janela, com controle, teclado e som (opcional: precisa de SDL2)

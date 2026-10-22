@@ -70,21 +70,37 @@ static void ksprintf(char *b, const char *fmt, ...) {
   b[n] = 0; va_end(ap);
 }
 
-/* ------------------------------ vértices ------------------------------ */
+/* ------------------------------ vértices ------------------------------
+ * Vértice do FlameCore: 48 B (x y z w, r g b a, u v, 2 palavras de enchimento) com os campos vindos das tabelas de floats (sem FPU no snowcc).
+ * O código do snowcc é ingênuo (cada operação passa pela pilha), então o caminho quente copia um molde pronto (cópia de struct = MOVE.L (A1)+,(A0)+
+ * em fila) e só grava o que varia; cada quad calcula seus 4 cantos uma vez e duplica 2 (a ordem dos 6 vértices é a de sempre: saída idêntica). */
+struct Vx { unsigned x, y, z, w, r, g, b, a, u, v, p0, p1; };
+static struct Vx vt_one = { 0, 0, 0, 0x3F800000u, 0, 0, 0, 0, 0, 0, 0, 0 };   /* molde: w = 1,0 */
+static struct Vx vt_col;                                                       /* molde com a cor do quad/texto corrente */
+#define QCL(c) ((c) < -QOFF ? -QOFF : (c) > NQ - QOFF - 1 ? NQ - QOFF - 1 : (c))   /* coordenadas fora da tabela ficam presas na borda; só variáveis simples */
 static unsigned *vp;                              /* próximo vértice (= VB + vn * 12) */
+static void vcol(struct Vx *p, unsigned argb) { p->r = CT[(argb >> 16) & 255]; p->g = CT[(argb >> 8) & 255]; p->b = CT[argb & 255]; p->a = CT[argb >> 24]; }
 static void vtx(int x, int y, int z, unsigned argb, int u, int v) {
-  unsigned *p = vp, *fq = FX + QOFF;
-  if (x < -QOFF) x = -QOFF; else if (x > NQ - QOFF - 1) x = NQ - QOFF - 1;      /* coordenadas fora da tabela ficam presas na borda */
-  if (y < -QOFF) y = -QOFF; else if (y > NQ - QOFF - 1) y = NQ - QOFF - 1;
-  *p++ = fq[x]; *p++ = fq[y]; *p++ = z ? UVT[z] : 0; *p++ = 0x3F800000u;
-  *p++ = CT[(argb >> 16) & 255]; *p++ = CT[(argb >> 8) & 255]; *p++ = CT[argb & 255]; *p++ = CT[argb >> 24];
-  *p++ = UVT[u]; *p++ = UVT[v]; *p++ = 0; *p++ = 0;
-  vp = p; vn++;
+  struct Vx *p = (struct Vx *)vp; unsigned *fq = FX + QOFF;
+  x = QCL(x); y = QCL(y);
+  p->x = fq[x]; p->y = fq[y]; p->z = z ? UVT[z] : 0; p->w = 0x3F800000u; vcol(p, argb);
+  p->u = UVT[u]; p->v = UVT[v]; p->p0 = 0; p->p1 = 0;
+  vp = (unsigned *)(p + 1); vn++;
 }
 static void quad4(int x0, int y0, int x1, int y1, unsigned c00, unsigned c10, unsigned c01, unsigned c11, int u0, int v0, int u1, int v1) {
+  struct Vx *p; unsigned *fq = FX + QOFF, fx0, fx1, fy0, fy1, fu0, fu1, fv0, fv1;
   if (vn + 6 > MAXV) return;
-  vtx(x0, y0, 0, c00, u0, v0); vtx(x1, y0, 0, c10, u1, v0); vtx(x1, y1, 0, c11, u1, v1);
-  vtx(x0, y0, 0, c00, u0, v0); vtx(x1, y1, 0, c11, u1, v1); vtx(x0, y1, 0, c01, u0, v1);
+  x0 = QCL(x0); x1 = QCL(x1); y0 = QCL(y0); y1 = QCL(y1);
+  fx0 = fq[x0]; fx1 = fq[x1]; fy0 = fq[y0]; fy1 = fq[y1]; fu0 = UVT[u0]; fu1 = UVT[u1]; fv0 = UVT[v0]; fv1 = UVT[v1];
+  p = (struct Vx *)vp;
+  if (c00 == c10 && c00 == c01 && c00 == c11) { vt_col = vt_one; vcol(&vt_col, c00); p[0] = vt_col; p[1] = vt_col; p[2] = vt_col; p[5] = vt_col; }
+  else { p[0] = vt_one; p[1] = vt_one; p[2] = vt_one; p[5] = vt_one; vcol(&p[0], c00); vcol(&p[1], c10); vcol(&p[2], c11); vcol(&p[5], c01); }
+  p[0].x = fx0; p[0].y = fy0; p[0].u = fu0; p[0].v = fv0;
+  p[1].x = fx1; p[1].y = fy0; p[1].u = fu1; p[1].v = fv0;
+  p[2].x = fx1; p[2].y = fy1; p[2].u = fu1; p[2].v = fv1;
+  p[5].x = fx0; p[5].y = fy1; p[5].u = fu0; p[5].v = fv1;
+  p[3] = p[0]; p[4] = p[2];
+  vp = (unsigned *)(p + 6); vn += 6;
 }
 static void quadc(int x0, int y0, int x1, int y1, unsigned c) { quad4(x0, y0, x1, y1, c, c, c, c, 0, 0, 0, 0); }
 static unsigned with_alpha(unsigned argb, int a) { if (a > 255) a = 255; if (a < 0) a = 0; return ((unsigned)a << 24) | (argb & 0xFFFFFF); }
@@ -97,22 +113,38 @@ static unsigned mix(unsigned c0, unsigned c1, int t) {   /* t 0..256 */
 /* ------------------------------ texto ------------------------------ */
 static int text_w(const char *s, int sc) { int w = 0; while (*s) { int c = *s++ & 127; w += ((int)adv[c] + 1) * sc / 100; } return w; }
 static void text(int x, int y, const char *s, int sc, unsigned argb) {
-  int q = x * 4;
+  int q = x * 4, gh = 16 * sc / 100 * 4, y0 = y * 4, y1 = y0 + gh;
+  unsigned *fq = FX + QOFF, fy0, fy1, fx0, fx1, fu0, fu1, fv0, fv1; struct Vx *p;
+  y0 = QCL(y0); y1 = QCL(y1); fy0 = fq[y0]; fy1 = fq[y1];
+  vt_col = vt_one; vcol(&vt_col, argb);                                           /* cor e y valem para a linha inteira */
   while (*s) {
-    int c = *s++ & 127, a = adv[c], cx = (c & 15) * 16, cy = (c >> 4) * 16;
-    if (c > 32 && a) {
-      int gw = (a + 2) * sc / 100 * 4, gh = 16 * sc / 100 * 4, tx = cx + (16 - a) / 2 - 1;
-      quad4(q, y * 4, q + gw, y * 4 + gh, argb, argb, argb, argb, tx * 4, cy * 8, (tx + a + 2) * 4, (cy + 16) * 8);
+    int c = *s++ & 127, a = adv[c];
+    if (c > 32 && a && vn + 6 <= MAXV) {
+      int x0 = q, x1 = q + (a + 2) * sc / 100 * 4, cy = (c >> 4) * 16, tx = (c & 15) * 16 + (16 - a) / 2 - 1;
+      x0 = QCL(x0); x1 = QCL(x1);
+      fx0 = fq[x0]; fx1 = fq[x1]; fu0 = UVT[tx * 4]; fu1 = UVT[(tx + a + 2) * 4]; fv0 = UVT[cy * 8]; fv1 = UVT[(cy + 16) * 8];
+      p = (struct Vx *)vp; p[0] = vt_col; p[1] = vt_col; p[2] = vt_col; p[5] = vt_col;
+      p[0].x = fx0; p[0].y = fy0; p[0].u = fu0; p[0].v = fv0;
+      p[1].x = fx1; p[1].y = fy0; p[1].u = fu1; p[1].v = fv0;
+      p[2].x = fx1; p[2].y = fy1; p[2].u = fu1; p[2].v = fv1;
+      p[5].x = fx0; p[5].y = fy1; p[5].u = fu0; p[5].v = fv1;
+      p[3] = p[0]; p[4] = p[2];
+      vp = (unsigned *)(p + 6); vn += 6;
     }
     q += (a + 1) * sc / 100 * 4;
   }
 }
 static void text_c(int cx, int y, const char *s, int sc, unsigned argb) { text(cx - text_w(s, sc) / 2, y, s, sc, argb); }
 
+/* cartão de memória: comando do SnowCard (1 ler, 2 programar, 3 apagar bloco); espera pelo IRQ do cartão (a tarefa dorme, o emulador pula o tempo ocioso)
+ * em vez de girar em task_yield; 0 = ok, -1 = erro */
+static Sem mc_sem; static int mc_irq;
 static int mc_do(unsigned cmd, unsigned sector, unsigned count, unsigned addr) {
   unsigned st;
+  if (!mc_irq) { sem_init(&mc_sem, 0); os_irq_attach(12, &mc_sem); REG(MCARD_BASE + MC_CTRL) = 1; mc_irq = 1; }
+  mc_sem.count = 0; REG(MCARD_BASE + MC_STATUS) = 6;
   REG(MCARD_BASE + MC_SECTOR) = sector; REG(MCARD_BASE + MC_COUNT) = count; REG(MCARD_BASE + MC_ADDR) = addr; REG(MCARD_BASE + MC_CMD) = cmd;
-  do { st = REG(MCARD_BASE + MC_STATUS); if (st & 1) task_yield(); } while (st & 1);
+  for (;;) { st = REG(MCARD_BASE + MC_STATUS); if (!(st & 1)) break; sem_wait_timeout(&mc_sem, 50); }
   REG(MCARD_BASE + MC_STATUS) = 6;
   return (st & 4) ? -1 : 0;
 }

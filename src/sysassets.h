@@ -1,6 +1,6 @@
 // Recursos do disco do sistema (lado do host): tudo o que o SnowFlame Dashboard lê do DVD em sys/.
 // Usado pelo sf100_mkdvd e pelos testes. Formatos (big-endian):
-//   sys/icons.raw   5 ícones 64x64 ARGB4444 numa faixa 512x64
+//   sys/icons.raw   6 ícones 64x64 ARGB4444 numa faixa 512x64 (jogos, cartão, sistema, disco, opções, informações)
 //   sys/ui.raw      texturas ARGB8888 da interface (offsets UI_TEX_* abaixo): cápsula "gel", brilho da cápsula, halo radial,
 //                   floco de neve, retângulo arredondado (9 fatias) e sua borda
 //   sys/hud.raw     sprites ARGB8888 do HUD (Blitter): 6 células 24x24 lado a lado (botões A/B/X/Y, ponto cinza, emblema)
@@ -27,7 +27,7 @@ inline std::vector<u8> slurp(const std::string& p) {
   return std::vector<u8>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
-// ---- ícones do menu: 5 de 64x64 numa faixa ARGB4444 de 512x64 (supersampling 4x4) ----
+// ---- ícones do menu: 6 de 64x64 numa faixa ARGB4444 de 512x64 (supersampling 4x4) ----
 struct Px { float r, g, b, a; };
 inline float sdBox(float x, float y, float cx, float cy, float hw, float hh, float rad) {
   float dx = std::fabs(x - cx) - hw + rad, dy = std::fabs(y - cy) - hh + rad;
@@ -64,6 +64,11 @@ inline Px icon_px(int id, float x, float y) {                                  /
       float sh = 0.5f + 0.5f * std::sin(ang * 2.f + 0.6f); r = 0.5f + 0.5f * sh; g = 0.7f + 0.3f * sh; b = 1.0f; a = c;
       over(cov(std::fabs(R - 16) - 0.7f) * 0.5f, 1, 1, 1); over(cov(R - 9) * (1 - cov(R - 8)) * 0.7f, 0.2f, 0.3f, 0.6f); a = std::max(a, c); break;
     }
+    case 5: {                                                                      // informações: anel com um "i"
+      float R = std::hypot(x - 32, y - 32);
+      float c = std::max({cov(R - 24) * (1 - cov(R - 19.5f)), cov(sdCirc(x, y, 32, 21, 3.6f)), cov(sdBox(x, y, 32, 38, 3.4f, 9, 1.2f))});
+      r = 0.6f * br + 0.2f; g = 0.85f * br; b = 1.0f; a = c; break;
+    }
     default: {                                                                     // opções: três sliders
       float c = 0; for (int k = 0; k < 3; k++) { float yy = 18 + k * 14; c = std::max(c, cov(sdBox(x, y, 32, yy, 22, 2.2f, 2.2f))); }
       r = 0.7f; g = 0.85f; b = 1.0f; a = c;
@@ -74,7 +79,7 @@ inline Px icon_px(int id, float x, float y) {                                  /
 }
 inline std::vector<u8> make_icons() {
   const int W = 512, H = 64; std::vector<u32> img((size_t)W * H);
-  for (int id = 0; id < 5; id++) for (int py = 0; py < 64; py++) for (int px = 0; px < 64; px++) {
+  for (int id = 0; id < 6; id++) for (int py = 0; py < 64; py++) for (int px = 0; px < 64; px++) {
     Px acc{0, 0, 0, 0}; for (int sy = 0; sy < 4; sy++) for (int sx = 0; sx < 4; sx++) {
       Px p = icon_px(id, px + (sx + 0.5f) / 4, py + (sy + 0.5f) / 4); acc.r += p.r * p.a; acc.g += p.g * p.a; acc.b += p.b * p.a; acc.a += p.a; }
     float al = acc.a / 16; float inv = acc.a > 0 ? 1.f / acc.a : 0;

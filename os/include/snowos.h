@@ -129,6 +129,7 @@ int  snd_sine(short *dst, int n, int period, int amp);   /* preenche PCM16 com u
 int  fs_mount(void);                             /* lê o superbloco e o diretório; 0 = ok, -1 = sem disco/formato inválido */
 int  fs_count(void);                             /* nº de arquivos */
 const char *fs_name(int i);                      /* nome do arquivo i (ou NULL) */
+unsigned fs_size_at(int i);                     /* tamanho em bytes do arquivo i (0 se não existe), sem abrir o arquivo */
 int  fs_open(const char *path);                  /* handle (>= 0) ou -1 */
 int  fs_read(int h, void *dst, unsigned n);      /* bytes lidos (0 no fim do arquivo); -1 = erro */
 int  fs_seek(int h, unsigned pos);               /* 0 = ok */
