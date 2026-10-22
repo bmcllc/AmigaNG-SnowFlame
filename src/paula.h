@@ -36,6 +36,7 @@ class Paula : public Device {
   struct Ap { std::vector<float> b; size_t i = 0; };
 
  private:
+  friend class Fabric;                              // backend SystemVerilog (fabric/)
   Bus& bus;
   u32 seq_addr = 0, seq_len = 0, seq_idx = 0; u64 seq_pos = 0;
   Comb combL[4], combR[4]; Ap apL[2], apR[2];

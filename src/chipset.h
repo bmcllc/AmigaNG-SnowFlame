@@ -19,6 +19,7 @@ class Blitter : public Device {
   // execução funcional síncrona; retorna ciclos (0 em erro)
   u64 execute(const Job& j);
  private:
+  friend class Fabric;                              // backend SystemVerilog (fabric/)
   Bus& bus; bool running = false; std::deque<Job> q; u32 r[16] = {0};
   u64 spr_px = 0, spr_n = 0; Ps spr_fin = 0;               // tráfego da última lista de sprites (pixels visíveis, sprites)
   u64 exec_sprites(const Job& j);
@@ -28,8 +29,8 @@ class Blitter : public Device {
 class Copper : public Device {
  public:
   explicit Copper(Bus& b) : bus(b) {}
-  u32 read(u32 off) override { return off == abi::COP_LIST ? list : off == abi::COP_CTRL ? (enabled ? 1 : 0) : 0; }
-  void write(u32 off, u32 v) override { if (off == abi::COP_LIST) list = v; else if (off == abi::COP_CTRL) enabled = v & 1; }
+  u32 read(u32 off) override;
+  void write(u32 off, u32 v) override;
   u32 list = 0; bool enabled = false;
   void restart() { pc = list; ended = !enabled; }
   // Executa instruções do Copper até um WAIT posterior à linha atual.
@@ -37,6 +38,7 @@ class Copper : public Device {
   u64 ops_executed = 0;
   std::function<void(u32 addr)> before_move;   // chamado antes de cada MOVE (o vídeo compõe as linhas pendentes se o alvo tiver efeitos fora dele)
  private:
+  friend class Fabric;                              // backend SystemVerilog (fabric/)
   Bus& bus; u32 pc = 0; bool ended = true;
 };
 
@@ -57,6 +59,7 @@ class Video : public Device {
   int cur_line = 0;
   u32 palette[256] = {0};                // CLUT ARGB para planos indexados (o Copper pode reescrevê-la por scanline)
  private:
+  friend class Fabric;                              // backend SystemVerilog (fabric/)
   Bus& bus; Copper& cop; int W = 320, H = 240; bool started = false;
   void set_mode(u32 m);
   void compose();

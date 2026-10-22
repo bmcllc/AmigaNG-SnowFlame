@@ -124,6 +124,8 @@ u64 Blitter::execute(const Job& j) {
 }
 
 // ---------------- Copper ----------------
+u32 Copper::read(u32 off) { return off == COP_LIST ? list : off == COP_CTRL ? (enabled ? 1 : 0) : 0; }
+void Copper::write(u32 off, u32 v) { if (off == COP_LIST) list = v; else if (off == COP_CTRL) enabled = v & 1; }
 void Copper::run_line(int line) {
   int guard = 0;
   while (!ended && guard++ < 4096) {

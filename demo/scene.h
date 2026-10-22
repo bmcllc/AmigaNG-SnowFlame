@@ -154,7 +154,7 @@ class SnowDemo {
     }
     u32 a = 0x00170000; for (auto& e : ev) { for (int k = 0; k < 4; k++) bus().raw_w32(a + k * 4, e[k]); a += 16; }
     seq_events = (u32)ev.size();
-    soc.paula.master = 220; soc.paula.rev_wet = 90;
+    soc.paula.write(abi::PA_MASTER, 220); soc.paula.write(abi::PA_REVERB_WET, 90);
   }
   u32 seq_events = 0;
 

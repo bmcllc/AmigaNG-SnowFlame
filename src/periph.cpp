@@ -63,6 +63,7 @@ void Timers::arm(int i) {
 }
 
 // ---------------- DVD ----------------
+void Dvd::insert(std::vector<u8> image) { disc = std::move(image); disc.resize((disc.size() + DVD_SECTOR - 1) / DVD_SECTOR * DVD_SECTOR); spinning = false; head = 0; }
 u32 Dvd::read(u32 off) {
   switch (off) {
     case DVD_LBA: return lba; case DVD_COUNT: return count; case DVD_DST: return dst;
@@ -189,5 +190,9 @@ void Hid::write(u32 off, u32 v) {
   if (off == abi::HID_CTRL) ctrl = v;
   else if (off == abi::HID_STATUS && (v & 4)) status_ovf = 0;
 }
+
+// ---------------- Console de depuração ----------------
+u32 DebugConsole::read(u32 off) { return off == DBG_STATUS ? 1u : 0u; }
+void DebugConsole::write(u32 off, u32 v) { if (off == DBG_PUTC) { out += (char)v; if (on_char) on_char((char)v); } }
 
 }  // namespace sf

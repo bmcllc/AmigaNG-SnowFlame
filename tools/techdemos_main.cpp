@@ -373,7 +373,7 @@ static void demo_audio() {
   }
   std::stable_sort(ev.begin(), ev.end(), [](const Ev& a, const Ev& b) { return a.t < b.t; });
   u32 a = 0x00170000; for (auto& e : ev) { s.bus.raw_w32(a, e.t); s.bus.raw_w32(a + 4, e.v); s.bus.raw_w32(a + 8, e.reg); s.bus.raw_w32(a + 12, e.val); a += 16; }
-  s.paula.master = 230; s.paula.rev_wet = 110;
+  s.paula.write(PA_MASTER, 230); s.paula.write(PA_REVERB_WET, 110);
   s.paula.write(PA_SEQ_ADDR, 0x00170000); s.paula.write(PA_SEQ_LEN, (u32)ev.size()); s.paula.write(PA_SEQ_CTRL, 1);
   s.sched.advance_to(s.sched.now + (Ps)(13.6e12)); s.sync_audio();
   int peak = 0; for (i16 x : s.paula.pcm) peak = std::max(peak, std::abs((int)x));

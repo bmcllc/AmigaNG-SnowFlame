@@ -8,7 +8,7 @@ using namespace abi;
 static const struct CycTab { Ps t[256]; CycTab() { for (int i = 0; i < 256; i++) t[i] = (Ps)i * 1000000ull / 266; } } cyc_tab;
 static inline Ps cyc_ps(int c) { return (unsigned)c < 256u ? cyc_tab.t[c] : (Ps)c * 1000000ull / 266; }
 
-Soc::Soc() : bridge(bus), cpu(bus), vpuA(bus, IRQ_VPUA), vpuB(bus, IRQ_VPUB), gpu(bus), blt(bus), cop(bus), paula(bus), video(bus, cop), mmu(bus), timers(bus), dvd(bus), mcard(bus), pads(bus), hid(bus) {
+Soc::Soc() : bridge(bus), cpu(bus), vpuA(bus, IRQ_VPUA), vpuB(bus, IRQ_VPUB), gpu(bus), blt(bus), cop(bus), paula(bus), video(bus, cop), mmu(bus), timers(bus), dvd(bus), mcard(bus), pads(bus), hid(bus), console(bus) {
   bus.sched = &sched;
   bus.map_device(BRIDGE_BASE, 0x1000, &bridge);
   bus.map_device(VPUA_BASE, 0x1000, &vpuA);   bus.map_device(VPUB_BASE, 0x1000, &vpuB);
@@ -29,6 +29,7 @@ Soc::Soc() : bridge(bus), cpu(bus), vpuA(bus, IRQ_VPUA), vpuB(bus, IRQ_VPUB), gp
     });
   };
   video.on_vblank_hook = [this]() { paula.render_until(sched.now); pads.latch(); };
+  fabric_attach(*this);
 }
 
 void Soc::quiesce() {

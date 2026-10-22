@@ -54,6 +54,7 @@ class Vpu : public Device {
   void reset_state();
 
  private:
+  friend class Fabric;                              // backend SystemVerilog (fabric/)
   struct Job { u32 pc; u32 s[8]; bool irq; };
   Bus& bus; u32 irq_bit;
   std::deque<Job> queue; bool running = false, done = false, faulted = false; u64 gen = 0;

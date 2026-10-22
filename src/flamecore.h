@@ -32,6 +32,7 @@ class FlameCore : public Device {
   struct Vtx { float x, y, z, rhw, r, g, b, a, u, v, fog, u1, v1; };
 
  private:
+  friend class Fabric;                              // backend SystemVerilog (fabric/)
   struct Tex { bool valid = false; const u8* ptr = nullptr; u32 addr = 0; int lw = 0, lh = 0, fmt = 0, flags = 0, nlevels = 1; u32 off[16] = {0}; };
   struct RState {
     u32 flags = 0; u32 bsrc = abi::BF_ONE, bdst = abi::BF_ZERO, basrc = abi::BF_ONE, badst = abi::BF_ZERO; u32 fog_color = 0; float fog_start = 0, fog_end = 1;

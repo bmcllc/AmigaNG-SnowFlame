@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Emulador C++17 do console conceitual "Amiga SnowFlame SF-100" (CPU ColdFire V4e, 2× SnowVector-128 VPU, GPU FlameCore, Blitter, Copper, vídeo, SnowPaula, SnowBridge). Sem dependências externas. README, comentários e docs estão em português; mantenha esse idioma.
+Emulador C++17 do console conceitual "Amiga SnowFlame SF-100" (CPU ColdFire V4e, 2× SnowVector-128 VPU, GPU FlameCore, Blitter, Copper, vídeo, SnowPaula, SnowBridge). Sem dependências externas no backend de referência (o backend SystemVerilog opcional exige Verilator). README, comentários e docs estão em português; mantenha esse idioma.
 
 ## Commands
 
@@ -31,6 +31,12 @@ port/build.sh out.bin prog.c # C real via GCC cross m68k (ColdFire V4e) + runtim
 `make` compila tudo e é lento (os testes do kernel/compilador/68k são pesados): use `make -j12`; o tempo de `./build/sf100_tests` completo passa de 1 min.
 
 O Makefile ignora o `CXX` do ambiente e usa g++ (com clang as imagens da demo divergem das do g++; objetos de compiladores diferentes não se misturam: um carimbo `build/.cc-*` refaz tudo ao trocar). Para outro compilador, passe `CXX=...` na linha de comando. Não há linter. O build usa `-Wall -Wextra`; mantenha-o sem warnings. O Makefile lista os `.cpp` de `src/` explicitamente em `SRC` — um novo arquivo em `src/` precisa ser adicionado lá (testes são pegos por wildcard `tests/*.cpp`; ferramentas ficam em `tools/` com alvo próprio).
+
+## Backend SystemVerilog (B.A.S.E. Host Fabric) — ver docs/HOST-FABRIC.md
+- O hardware tem duas realizações do mesmo comportamento: modelos C++ de referência (`src/`, `make`) e backend SystemVerilog (`rtl/*.sv`, Verilator, `make BACKEND=sv` -> `build/sv/`). O frontend (Soc, ferramentas, testes) é o mesmo; no build SV os métodos das classes de dispositivo ficam em `fabric/sv_*.cpp` e chamam a API DPI exportada pelos módulos.
+- `fabric/fabric.cpp` implementa os serviços do hospedeiro importados por `rtl/fabric_pkg.sv` (memória/caches/TLB do `Bus`, eventos do `Sched`, mídias, FPU FP32, espelhos). O pacote de constantes SV é gerado de `src/abi.h` (`tools/abi2sv.py`).
+- Mudou comportamento de hardware? Altere `src/` E `rtl/` e rode `make verify` (suíte nos dois backends + demo bit a bit igual). Campos públicos dos dispositivos são espelhos no backend SV: o frontend deve usar a API (MMIO, `write`, `insert`...).
+- Verilator: evite palavras reservadas de SV como identificadores e chamadas DPI dentro de índices de array; contas FP32 só via `f32_*`.
 
 ## Architecture
 

@@ -10,6 +10,12 @@
 
 namespace sf {
 
+class Soc;
+// Liga o backend de hardware ao SoC recém-construído: no build com o backend SystemVerilog (fabric/) cria o modelo do SoC e
+// conecta os serviços do hospedeiro (memória, tempo, mídias, saídas); no modelo de referência em C++ (src/fabric_ref.cpp) não faz nada.
+void fabric_attach(Soc& s);
+const char* fabric_backend();      // "ref" ou "sv"
+
 class Soc {
  public:
   Soc();

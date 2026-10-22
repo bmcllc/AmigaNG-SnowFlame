@@ -3,6 +3,7 @@
 #pragma once
 #include "common.h"
 #include "abi.h"
+#include <memory>
 
 namespace sf {
 
@@ -74,6 +75,9 @@ class Bus {
   bool fault = false; u32 fault_addr = 0;     // erro de barramento sticky (CPU consulta)
   u32 irq_status = 0, irq_mask = 0;
   u32 sem[16] = {0};
+  // Backend de hardware (B.A.S.E. Host Fabric, fabric/): no build com o backend SystemVerilog guarda o modelo do SoC ligado a
+  // este barramento; vazio no modelo de referência em C++.
+  std::shared_ptr<void> fabric;
 
   // Árbitro de memória: cada região (DDR, VRAM, ARAM, outras) atende um mestre por vez.
   // reserve() devolve o instante absoluto (ps) em que a transferência termina, serializando mestres concorrentes.
@@ -205,6 +209,7 @@ class Bridge : public Device {
   u64 dma_bytes = 0, dma_jobs = 0;
   std::function<void()> on_reboot;                  // BR_SYS_CTRL bit0
  private:
+  friend class Fabric;                              // backend SystemVerilog (fabric/)
   Bus& bus; u32 time_hi_latch = 0; u32 cache_addr = 0, cache_len = 0;
   void start(int c, bool chain);
   void exec(int c, u32 src, u32 dst, u32 len, u32 flags, u32 next);
