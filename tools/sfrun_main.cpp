@@ -38,9 +38,12 @@ int main(int argc, char** argv) {
   s.console.on_char = [&s](char c) { static bool bol = true; if (ts && bol) std::printf("[%9.3f] ", s.sched.now / 1e12); std::putchar(c); bol = c == '\n'; };
   s.load(base, img); s.cpu.reset_regs(); s.cpu.a[7] = abi::IPL_STACK; s.cpu.set_pc(have_entry ? entry : base);
   if (video) { s.video.on_frame = [&](Video& v) { for (auto& sh : shots) if (sh.first == (int)v.frames) { write_png(sh.second, v.width(), v.height(), v.frame); std::printf("[sf100_run] quadro %u gravado em %s\n", v.frames, sh.second.c_str()); } }; s.video.start(); }
-  u32 ring[256] = {0}; int rn = 0; std::map<u32, u64> hist, callers;
+  u32 ring[256] = {0}; unsigned rn = 0; std::map<u32, u64> hist, callers;
   s.on_step = [&](u32 pc, int) {
-    ring[rn++ & 255] = pc; static const double prof_from = std::getenv("SF_PROFILE_FROM") ? std::atof(std::getenv("SF_PROFILE_FROM")) * 1e12 : 0; if (prof && (double)s.sched.now >= prof_from) hist[pc >> 4]++;   // SF_PROFILE_FROM=segundos simulados: só conta a partir daí
+    ring[rn++ & 255] = pc; static const double prof_from = std::getenv("SF_PROFILE_FROM") ? std::atof(std::getenv("SF_PROFILE_FROM")) * 1e12 : 0; if (prof && (double)s.sched.now >= prof_from) {   // SF_PROFILE_FROM=segundos simulados: só conta a partir daí
+      static const bool by_miss = std::getenv("SF_PROFILE_MISSES") != nullptr; static u64 lastm = ~0ull;   // SF_PROFILE_MISSES=1: conta misses de D-cache (da instrução anterior) em vez de instruções
+      if (!by_miss) hist[pc >> 4]++; else { u64 m = s.bus.dc.misses; if (lastm != ~0ull && m != lastm) hist[ring[(rn - 2) & 255] >> 4] += m - lastm; lastm = m; }
+    }
     static const u32 brk = std::getenv("SF_BREAK") ? (u32)std::strtoul(std::getenv("SF_BREAK"), nullptr, 16) : 0;   // SF_BREAK=endereço_hex: mostra regs e pilha nas primeiras passagens
     static const char* guard_env = std::getenv("SF_GUARD"); static u64 nstep; static bool corr; if (!corr && guard_env && (++nstep & 1023) == 0) {   // SF_GUARD=endereço: avisa quando a memória do código muda (DMA/escrita fora do on_access)
       u32 g = (u32)std::strtoul(guard_env, nullptr, 16); for (int i = 0; i < 16; i++) if (s.bus.raw_r8(g + i) != img[g - base + i]) { corr = true; std::printf("[sf100_run] CÓDIGO ALTERADO em %08x (pc=%08x, instr=%llu); últimos PCs:", g + i, pc, (unsigned long long)s.cpu.instrs); for (int k = 0; k < 16; k++) std::printf(" %x", ring[(rn + 240 + k) & 255]); std::printf("\n"); break; }
@@ -68,8 +71,8 @@ int main(int argc, char** argv) {
   bool ok = s.run_until_halt((Ps)(secs * 1e12));
   if (std::getenv("SF_DVDSTAT")) { std::printf("[sf100_run] DVD: %llu comandos, %llu setores, %llu saltos; BR_SLEEP_US por PC:", (unsigned long long)dvd_cmds, (unsigned long long)dvd_secs, (unsigned long long)dvd_seeks); for (auto& kv : sleeps) std::printf(" %x(%llu)", kv.first, (unsigned long long)kv.second); std::printf("\n"); }
   s.bus.cache_flush_all(false); std::fflush(stdout);
-  std::printf("[sf100_run] %s: pc=%08x d0=%d, %llu instruções, %llu ciclos, %.3f ms simulados, I-cache %llu/%llu\n", ok ? "HALT" : (s.cpu.halted ? "CPU parou (falha)" : "tempo esgotado"), s.cpu.pc, (int)s.cpu.d[0],
-    (unsigned long long)s.cpu.instrs, (unsigned long long)s.cpu.cycles, s.sched.now / 1e9, (unsigned long long)s.bus.ihits, (unsigned long long)s.bus.imisses);
+  std::printf("[sf100_run] %s: pc=%08x d0=%d, %llu instruções, %llu ciclos, %.3f ms simulados, I-cache %llu/%llu, D-cache %llu/%llu\n", ok ? "HALT" : (s.cpu.halted ? "CPU parou (falha)" : "tempo esgotado"), s.cpu.pc, (int)s.cpu.d[0],
+    (unsigned long long)s.cpu.instrs, (unsigned long long)s.cpu.cycles, s.sched.now / 1e9, (unsigned long long)s.bus.ihits, (unsigned long long)s.bus.imisses, (unsigned long long)s.bus.dc.hits, (unsigned long long)s.bus.dc.misses);
   std::printf("[sf100_run] listas do GPU: %llu (quadros 3D), quadros de vídeo: %u\n", (unsigned long long)s.gpu.lists_done, s.video.frames);
   if (prof && std::getenv("SF_PROFILE_FILE")) { std::ofstream pf(std::getenv("SF_PROFILE_FILE")); for (auto& kv : hist) pf << std::hex << (kv.first << 4) << " " << std::dec << kv.second << "\n"; }   // histograma completo (blocos de 16 B): "endereço contagem"
   if (!callers.empty()) { std::vector<std::pair<u64, u32>> v; for (auto& kv : callers) v.push_back({kv.second, kv.first}); std::sort(v.rbegin(), v.rend()); std::printf("[sf100_run] chamadores de %s:", std::getenv("SF_CALLERS")); for (size_t i = 0; i < 16 && i < v.size(); i++) std::printf(" %x(%llu)", v[i].second, (unsigned long long)v[i].first); std::printf("\n"); }

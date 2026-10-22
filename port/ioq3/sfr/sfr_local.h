@@ -115,5 +115,6 @@ float SFR_Time(void);                                 /* segundos */
 #define SFR_RT_ADDR0 0x10000000u
 #define SFR_RT_ADDR1 0x10140000u
 #define SFR_TEX_BASE 0x10300000u
-#define SFR_TEX_END  0x11F00000u
+#define SFR_TEX_END  0x11A00000u
+#define SFR_VBUF_ADDR 0x11A00000u                  /* vértices de tela na VRAM (fora da D-cache: na DDR cada linha nova custava um miss) */
 #endif

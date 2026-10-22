@@ -117,7 +117,8 @@ void SFR_DrawEntityModel(const refEntity_t *e) {
     pos = ri.Hunk_AllocateTempMemory(nv * 12); col = ri.Hunk_AllocateTempMemory(nv * 4);
     for (i = 0; i < nv; i++) {
       short *a = &su->xyz[(fr * nv + i) * 4], *b = &su->xyz[(ofr * nv + i) * 4]; float p[3], n[3], l, w = 1.0f / 64; int c;
-      for (c = 0; c < 3; c++) p[c] = (a[c] * (1 - bl) + b[c] * bl) * w;
+      if (bl == 0) for (c = 0; c < 3; c++) p[c] = a[c] * w;           /* sem interpolação: a*1 + b*0 dá o mesmo resultado */
+      else for (c = 0; c < 3; c++) p[c] = (a[c] * (1 - bl) + b[c] * bl) * w;
       for (c = 0; c < 3; c++) pos[i][c] = e->origin[c] + p[0] * e->axis[0][c] + p[1] * e->axis[1][c] + p[2] * e->axis[2][c];
       decode_normal(a[3], n);
       { float wn[3]; for (c = 0; c < 3; c++) wn[c] = n[0] * e->axis[0][c] + n[1] * e->axis[1][c] + n[2] * e->axis[2][c];

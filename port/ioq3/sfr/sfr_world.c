@@ -6,6 +6,7 @@ static dheader_t *bsp; static byte *bspdata;
 static wsurf_t *surfs; static int nsurfs;
 static dplane_t *planes; static dnode_t *nodes; static dleaf_t *leafs; static int *leafsurf; static dmodel_t *models; static int nmodels, nnodes, nleafs;
 static byte *vis; static int vis_clusters, vis_rowbytes;
+static int *node_parent, *leaf_parent, *node_mark, *leaf_mark, mark_count, mark_cluster;   /* R_MarkLeaves: nós com folha visível pelo PVS */
 static char *entstr, *entp; static sfimg_t **lmimgs; static int nlm;
 qboolean sfr_world_loaded; static int framestamp; static int sf_leafs_drawn;
 static float sky_color[3];
@@ -22,17 +23,28 @@ static int sfr_vram_used_kb(void) { return sfr_vram_used / 1024; }
 static void *hunk_temp(int n) { return ri.Hunk_AllocateTempMemory(n); }
 static void hunk_temp_free(void *p) { ri.Hunk_FreeTempMemory(p); }
 
-/* ---- patches: biquadrático de Bézier 3x3 por sub-patch, tesselado em SUBDIV segmentos ---- */
+/* ---- patches: biquadrático de Bézier 3x3 por sub-patch. Como o r_subdivisions do Q3, cada coluna/linha de sub-patches recebe
+   n segmentos pela curvatura: o erro de n cordas de uma quadrática é |P0-2P1+P2|/(4n²), então n = ceil(sqrt(dev/(4*tol))), até SUBDIV.
+   shortcut: sem costura entre patches vizinhos (R_StitchPatches do Q3): podem sobrar frestas de até SUBDIV_TOL unidades; costurar se aparecerem ---- */
 #define SUBDIV 5
+#define SUBDIV_TOL 4.0f
 static void bez3(float t, float *w) { float s = 1 - t; w[0] = s * s; w[1] = 2 * s * t; w[2] = t * t; }
+static float cpv(const drawVert_t *d, int c) { return swap_float(d->xyz[c]); }
+static int segs(float dev) { int n = 1; while (n < SUBDIV && dev > 4 * SUBDIV_TOL * n * n) n++; return n; }
 static void tessellate(wsurf_t *ws, const drawVert_t *cp, int pw, int ph) {
-  int nsx = (pw - 1) / 2, nsy = (ph - 1) / 2, nx = nsx * SUBDIV + 1, ny = nsy * SUBDIV + 1, gx, gy, k, c; float wx[3], wy[3];
+  int nsx = (pw - 1) / 2, nsy = (ph - 1) / 2, nx = 1, ny = 1, gx, gy, k, c, i, j; float wx[3], wy[3];
+  int segx[16], segy[16], gxa[128], gya[128]; float txs[128], tys[128];
+  if (nsx > 16 || nsy > 16) { nsx = nsx > 16 ? 16 : nsx; nsy = nsy > 16 ? 16 : nsy; }
+  for (i = 0; i < nsx; i++) { float dev = 0; for (j = 0; j < ph; j++) { const drawVert_t *r = cp + j * pw + i * 2; float e[3], l; for (c = 0; c < 3; c++) e[c] = cpv(r, c) - 2 * cpv(r + 1, c) + cpv(r + 2, c); l = VectorLength(e); if (l > dev) dev = l; } segx[i] = segs(dev); }
+  for (j = 0; j < nsy; j++) { float dev = 0; for (i = 0; i < pw; i++) { const drawVert_t *r = cp + j * 2 * pw + i; float e[3], l; for (c = 0; c < 3; c++) e[c] = cpv(r, c) - 2 * cpv(r + pw, c) + cpv(r + 2 * pw, c); l = VectorLength(e); if (l > dev) dev = l; } segy[j] = segs(dev); }
+  /* posição de cada linha/coluna da grade: sub-patch e parâmetro t */
+  for (i = 0; i < nsx; i++) for (k = 0; k < segx[i]; k++) { gxa[nx - 1] = i; txs[nx - 1] = (float)k / segx[i]; nx++; } gxa[nx - 1] = nsx - 1; txs[nx - 1] = 1;
+  for (j = 0; j < nsy; j++) for (k = 0; k < segy[j]; k++) { gya[ny - 1] = j; tys[ny - 1] = (float)k / segy[j]; ny++; } gya[ny - 1] = nsy - 1; tys[ny - 1] = 1;
   ws->nv = nx * ny; ws->ni = (nx - 1) * (ny - 1) * 6;
   ws->pos = hunk(ws->nv * sizeof *ws->pos); ws->st = hunk(ws->nv * sizeof *ws->st); ws->lms = hunk(ws->nv * sizeof *ws->lms); ws->col = hunk(ws->nv * sizeof *ws->col); ws->idx = hunk(ws->ni * sizeof(int));
   for (gy = 0; gy < ny; gy++) for (gx = 0; gx < nx; gx++) {
-    int a = gx / SUBDIV, b = gy / SUBDIV, v = gy * nx + gx; float tx, ty, col[4] = {0, 0, 0, 0}; int i, j;
-    if (a >= nsx) a = nsx - 1; if (b >= nsy) b = nsy - 1;
-    tx = (float)(gx - a * SUBDIV) / SUBDIV; ty = (float)(gy - b * SUBDIV) / SUBDIV; bez3(tx, wx); bez3(ty, wy);
+    int a = gxa[gx], b = gya[gy], v = gy * nx + gx; float col[4] = {0, 0, 0, 0};
+    bez3(txs[gx], wx); bez3(tys[gy], wy);
     ws->pos[v][0] = ws->pos[v][1] = ws->pos[v][2] = 0; ws->st[v][0] = ws->st[v][1] = 0; ws->lms[v][0] = ws->lms[v][1] = 0;
     for (j = 0; j < 3; j++) for (i = 0; i < 3; i++) {
       const drawVert_t *d = &cp[(b * 2 + j) * pw + (a * 2 + i)]; float wgt = wx[i] * wy[j];
@@ -68,6 +80,9 @@ void SFR_LoadWorld(const char *name) {
   LUMP(LUMP_LIGHTMAPS, byte, lmdata, lmlen);
   swap_lump(planes, nplanes * (int)sizeof *planes); swap_lump(nodes, nnodes * (int)sizeof *nodes); swap_lump(leafs, nleafs * (int)sizeof *leafs);
   swap_lump(leafsurf, i * (int)sizeof *leafsurf); swap_lump(models, nmodels * (int)sizeof *models);   /* daqui em diante, nativos */
+  node_parent = hunk(nnodes * sizeof(int)); leaf_parent = hunk(nleafs * sizeof(int)); node_mark = hunk(nnodes * sizeof(int)); leaf_mark = hunk(nleafs * sizeof(int));
+  memset(node_mark, 0, nnodes * sizeof(int)); memset(leaf_mark, 0, nleafs * sizeof(int)); mark_count = 0; mark_cluster = -2; node_parent[0] = -1;
+  for (i = 0; i < nnodes; i++) { int c; for (c = 0; c < 2; c++) { int ch = nodes[i].children[c]; if (ch >= 0) node_parent[ch] = i; else leaf_parent[-ch - 1] = i; } }
   { int ofs = swap_int(bsp->lumps[LUMP_VISIBILITY].fileofs), len = swap_int(bsp->lumps[LUMP_VISIBILITY].filelen);
     if (len > 8) { int *h = (int *)(bspdata + ofs); vis_clusters = swap_int(h[0]); vis_rowbytes = swap_int(h[1]); vis = bspdata + ofs + 8; } else vis = NULL; }
   /* lightmaps */
@@ -158,10 +173,20 @@ static void draw_surface(wsurf_t *ws) {
 }
 
 static int camera_cluster;
+static void mark_leaves(void) {                                      /* só quando a câmera muda de cluster */
+  int i, n;
+  if (camera_cluster == mark_cluster) return;
+  mark_cluster = camera_cluster; mark_count++;
+  for (i = 0; i < nleafs; i++) {
+    if (!cluster_visible(camera_cluster, leafs[i].cluster)) continue;
+    leaf_mark[i] = mark_count;
+    for (n = leaf_parent[i]; n >= 0 && node_mark[n] != mark_count; n = node_parent[n]) node_mark[n] = mark_count;
+  }
+}
 static void walk(int n, int mask) {
   if (n < 0) {
     dleaf_t *lf = &leafs[-n - 1]; int k, first, cnt; float mn[3], mx[3];
-    if (!cluster_visible(camera_cluster, lf->cluster)) return;
+    if (leaf_mark[-n - 1] != mark_count) return;
     for (k = 0; k < 3; k++) { mn[k] = (float)lf->mins[k]; mx[k] = (float)lf->maxs[k]; }
     if (mask && (mask = box_cull(mn, mx, mask)) < 0) return;
     first = lf->firstLeafSurface; cnt = lf->numLeafSurfaces; sf_leafs_drawn++;
@@ -173,6 +198,7 @@ static void walk(int n, int mask) {
     }
     return;
   }
+  if (node_mark[n] != mark_count) return;
   { dnode_t *nd = &nodes[n]; float mn[3], mx[3]; int k; for (k = 0; k < 3; k++) { mn[k] = (float)nd->mins[k]; mx[k] = (float)nd->maxs[k]; }
     if (mask && (mask = box_cull(mn, mx, mask)) < 0) return;
     walk(nd->children[0], mask); walk(nd->children[1], mask); }
@@ -182,7 +208,7 @@ void SFR_RenderWorld(void) {
   int leaf; extern void SFR_SetClear(unsigned argb);
   if (!sfr_world_loaded) return;
   framestamp++; sf_leafs_drawn = 0;
-  leaf = point_leaf(sfr_view.org); camera_cluster = leafs[leaf].cluster;
+  leaf = point_leaf(sfr_view.org); camera_cluster = leafs[leaf].cluster; mark_leaves();
   walk(0, 15);
   SFR_SetClear(0xFF000000u | ((unsigned)(sky_color[0] * 255) << 16) | ((unsigned)(sky_color[1] * 255) << 8) | (unsigned)(sky_color[2] * 255));
 }

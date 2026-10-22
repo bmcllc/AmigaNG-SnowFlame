@@ -9,12 +9,12 @@ int sfr_frame_count;
 
 float SFR_Time(void) { static unsigned long long t0; extern unsigned long long sf_time_ns(void); unsigned long long n = sf_time_ns(); if (!t0) t0 = n; return (float)((double)(n - t0) * 1e-9); }
 
-static void *raw_vbuf, *raw_cmdbuf;                                          /* alocados uma vez: o renderer é reiniciado a cada mapa (Shutdown + BeginRegistration) */
+static void *raw_cmdbuf;                                          /* alocados uma vez: o renderer é reiniciado a cada mapa (Shutdown + BeginRegistration) */
 void SFR_BackendInit(void) {
-  if (!raw_vbuf) {
-    raw_vbuf = malloc((size_t)SFR_MAX_VERTS * 48 + 16); raw_cmdbuf = malloc(CMD_WORDS * 4 + 16); packets = malloc(sizeof(sfpacket_t) * SFR_MAX_PACKETS);
-    if (!raw_vbuf || !raw_cmdbuf || !packets) { extern void sf_malloc_stats(size_t *, size_t *, size_t *); size_t l, f, u; sf_malloc_stats(&l, &f, &u); ri.Error(ERR_FATAL, "SFR: sem memória para os buffers do backend (maior bloco livre %u KB, livre %u KB, usado %u KB)", (unsigned)(l >> 10), (unsigned)(f >> 10), (unsigned)(u >> 10)); }
-    vbuf = (unsigned *)(((unsigned)raw_vbuf + 15) & ~15u); cmdbuf = (unsigned *)(((unsigned)raw_cmdbuf + 15) & ~15u);
+  if (!raw_cmdbuf) {
+    raw_cmdbuf = malloc(CMD_WORDS * 4 + 16); packets = malloc(sizeof(sfpacket_t) * SFR_MAX_PACKETS);
+    if (!raw_cmdbuf || !packets) { extern void sf_malloc_stats(size_t *, size_t *, size_t *); size_t l, f, u; sf_malloc_stats(&l, &f, &u); ri.Error(ERR_FATAL, "SFR: sem memória para os buffers do backend (maior bloco livre %u KB, livre %u KB, usado %u KB)", (unsigned)(l >> 10), (unsigned)(f >> 10), (unsigned)(u >> 10)); }
+    vbuf = (unsigned *)SFR_VBUF_ADDR; cmdbuf = (unsigned *)(((unsigned)raw_cmdbuf + 15) & ~15u);
   }
   nverts = npackets = 0; rt_cur = 0;
   VID_REG(0x00) = 2;                                                           /* VMODE_480P */
@@ -139,9 +139,13 @@ static void stage_uv(const sfstage_t *st, float t, float *u, float *v) {
 }
 
 /* desenha triângulos de um shader: pos em mundo (ou já em câmera se cam_space), st/lm/col por vértice */
-static sfv_t *scratch; static int scratch_cap;
-/* por vértice da chamada: código de saída e projeção (x, y de tela, profundidade, 1/z; só vale com código 0); por passe: atributos */
-static unsigned char *vcode; static float (*vproj)[4]; static cv_t *vattr;
+/* por vértice da chamada: posição em câmera, código de saída e projeção (x, y de tela, profundidade, 1/z; só vale com código 0); por passe:
+   atributos. Ficam na SRAM interna (fora da D-cache: na DDR os dados das superfícies os expulsavam entre chamadas); acima de SRAM_NV, no heap */
+typedef struct { float x, y, z; } cam_t;
+#define SFR_SRAM_BUF 0x30000800u                                     /* abaixo: caminho do IPL (0x0) e linha de comando (0x200, lida no boot) */
+#define SRAM_NV ((int)((0x30008000u - SFR_SRAM_BUF) / (sizeof(cam_t) + sizeof(cv_t) + 4 * sizeof(float) + 1)))
+static cam_t *scratch, *heap_scratch; static int heap_cap;
+static unsigned char *vcode, *heap_vcode; static float (*vproj)[4], (*heap_vproj)[4]; static cv_t *vattr, *heap_vattr;
 #ifndef SFR_CULL_SIGN
 #define SFR_CULL_SIGN 1.0f
 #endif
@@ -150,10 +154,14 @@ void SFR_DrawShaderTris(shader_t *sh, int nv, const float (*pos)[3], const float
   const int cull_on = sfr_allow_cull && !sfr_cull_disable && !sfr_2d && sh->cull != 2;   /* o chamador liga sfr_allow_cull só para esta chamada */
   sfr_allow_cull = 0;
   if (sh->nodraw || sh->sky || nv < 3 || nidx < 3) return;
-  if (nv > scratch_cap) {
-    free(scratch); free(vcode); free(vproj); free(vattr); scratch_cap = nv + 256;
-    scratch = malloc(sizeof(sfv_t) * (size_t)scratch_cap); vcode = malloc((size_t)scratch_cap); vproj = malloc(sizeof(*vproj) * (size_t)scratch_cap); vattr = malloc(sizeof(cv_t) * (size_t)scratch_cap);
-    if (!scratch || !vcode || !vproj || !vattr) { free(scratch); free(vcode); free(vproj); free(vattr); scratch = NULL; vcode = NULL; vproj = NULL; vattr = NULL; scratch_cap = 0; return; }
+  if (nv <= SRAM_NV) { scratch = (cam_t *)SFR_SRAM_BUF; vattr = (cv_t *)(scratch + SRAM_NV); vproj = (float (*)[4])(vattr + SRAM_NV); vcode = (unsigned char *)(vproj + SRAM_NV); }
+  else {
+    if (nv > heap_cap) {
+      free(heap_scratch); free(heap_vcode); free(heap_vproj); free(heap_vattr); heap_cap = nv + 256;
+      heap_scratch = malloc(sizeof(cam_t) * (size_t)heap_cap); heap_vcode = malloc((size_t)heap_cap); heap_vproj = malloc(sizeof(*heap_vproj) * (size_t)heap_cap); heap_vattr = malloc(sizeof(cv_t) * (size_t)heap_cap);
+      if (!heap_scratch || !heap_vcode || !heap_vproj || !heap_vattr) { free(heap_scratch); free(heap_vcode); free(heap_vproj); free(heap_vattr); heap_scratch = NULL; heap_vcode = NULL; heap_vproj = NULL; heap_vattr = NULL; heap_cap = 0; return; }
+    }
+    scratch = heap_scratch; vcode = heap_vcode; vproj = heap_vproj; vattr = heap_vattr;
   }
   for (i = 0; i < nv; i++) {                                         /* mundo -> câmera */
     float d[3]; VectorSubtract(pos[i], sfr_view.org, d);
@@ -163,7 +171,7 @@ void SFR_DrawShaderTris(shader_t *sh, int nv, const float (*pos)[3], const float
   { int front = 0; for (i = 0; i < nv; i++) if (scratch[i].z > sfr_view.znear) { front = 1; break; } if (!front) return; }
   { const float gb = 1.4f, txg = sfr_view.tx * gb, tyg = sfr_view.ty * gb, zn = sfr_view.znear, fx = sfr_view.fx, fy = sfr_view.fy, cx0 = sfr_view.cx0, cy0 = sfr_view.cy0;
     for (i = 0; i < nv; i++) {                                        /* mesmas contas de put_vertex, uma vez por vértice */
-      const sfv_t *c = &scratch[i];
+      const cam_t *c = &scratch[i];
       if ((vcode[i] = (unsigned char)outcode(c->x, c->y, c->z, txg, tyg, zn)) == 0) {
         float rhw = 1.0f / c->z, depth = sfr_view.depthk * (1.0f - sfr_view.znear * rhw);
         if (depth < 0) depth = 0; if (depth > 1) depth = 1;
@@ -180,35 +188,45 @@ void SFR_DrawShaderTris(shader_t *sh, int nv, const float (*pos)[3], const float
     if (s->blend == 1) { flags |= ST_BLEND; src = s->src; dst = s->dst; }
     else if (!sfr_2d) flags |= ST_DEPTH_WRITE;
     if (s->atest) flags |= ST_ATEST;
-    for (i = 0; i < nv; i++) {                                        /* atributos do passe, uma vez por vértice */
-      cv_t *c = &vattr[i]; float u = st[i][0], v = st[i][1];
-      c->x = scratch[i].x; c->y = scratch[i].y; c->z = scratch[i].z;
-      if (s->tcgen_env) { u = 0.5f; v = 0.5f; }
-      stage_uv(s, time, &u, &v); c->u = u; c->v = v;
-      c->u1 = lm ? lm[i][0] : 0; c->v1 = lm ? lm[i][1] : 0;
+    { /* cor e alfa do passe: constantes ou por vértice, decidido uma vez (mesmas contas de antes, fora do laço) */
+      int cmode = 0, amode = 0, tc = s->tcgen_env || s->has_tcmod; float cr = 1, cg = 1, cb = 1, ca = 1;
       switch (s->rgbgen) {
-        case RGB_VERTEX: if (col) { c->r = col[i][0] * (1.0f / 255); c->g = col[i][1] * (1.0f / 255); c->b = col[i][2] * (1.0f / 255); } else c->r = c->g = c->b = 1; break;
-        case RGB_ONEMINUSVERTEX: if (col) { c->r = 1 - col[i][0] * (1.0f / 255); c->g = 1 - col[i][1] * (1.0f / 255); c->b = 1 - col[i][2] * (1.0f / 255); } else c->r = c->g = c->b = 0; break;
-        case RGB_LIGHTING: if (col) { c->r = col[i][0] * (1.0f / 255); c->g = col[i][1] * (1.0f / 255); c->b = col[i][2] * (1.0f / 255); break; }
-        case RGB_ENTITY: if (ent_rgba) { c->r = ent_rgba[0] * (1.0f / 255); c->g = ent_rgba[1] * (1.0f / 255); c->b = ent_rgba[2] * (1.0f / 255); } else c->r = c->g = c->b = 1; break;
-        case RGB_CONST: c->r = s->rgb[0] * (1.0f / 255); c->g = s->rgb[1] * (1.0f / 255); c->b = s->rgb[2] * (1.0f / 255); break;
-        default: c->r = c->g = c->b = 1; break;
+        case RGB_VERTEX: if (col) cmode = 1; break;
+        case RGB_ONEMINUSVERTEX: if (col) cmode = 2; else cr = cg = cb = 0; break;
+        case RGB_LIGHTING: if (col) { cmode = 1; break; }
+        case RGB_ENTITY: if (ent_rgba) { cr = ent_rgba[0] * (1.0f / 255); cg = ent_rgba[1] * (1.0f / 255); cb = ent_rgba[2] * (1.0f / 255); } break;
+        case RGB_CONST: cr = s->rgb[0] * (1.0f / 255); cg = s->rgb[1] * (1.0f / 255); cb = s->rgb[2] * (1.0f / 255); break;
+        default: break;
       }
-      c->a = 1;
-      if (s->alphagen == AG_VERTEX && col) c->a = col[i][3] * (1.0f / 255); else if (s->alphagen == AG_ENTITY && ent_rgba) c->a = ent_rgba[3] * (1.0f / 255);
-      else if (s->rgbgen == RGB_VERTEX && sfr_2d && col) c->a = col[i][3] * (1.0f / 255);
+      if (s->alphagen == AG_VERTEX && col) amode = 1; else if (s->alphagen == AG_ENTITY && ent_rgba) ca = ent_rgba[3] * (1.0f / 255);
+      else if (s->rgbgen == RGB_VERTEX && sfr_2d && col) amode = 1;
+      for (i = 0; i < nv; i++) {                                      /* atributos do passe, uma vez por vértice (x, y, z só no recorte) */
+        cv_t *c = &vattr[i];
+        if (tc) { float u = st[i][0], v = st[i][1]; if (s->tcgen_env) { u = 0.5f; v = 0.5f; } stage_uv(s, time, &u, &v); c->u = u; c->v = v; }
+        else { c->u = st[i][0]; c->v = st[i][1]; }
+        if (lm) { c->u1 = lm[i][0]; c->v1 = lm[i][1]; } else c->u1 = c->v1 = 0;
+        if (cmode == 0) { c->r = cr; c->g = cg; c->b = cb; }
+        else if (cmode == 1) { c->r = col[i][0] * (1.0f / 255); c->g = col[i][1] * (1.0f / 255); c->b = col[i][2] * (1.0f / 255); }
+        else { c->r = 1 - col[i][0] * (1.0f / 255); c->g = 1 - col[i][1] * (1.0f / 255); c->b = 1 - col[i][2] * (1.0f / 255); }
+        c->a = amode ? col[i][3] * (1.0f / 255) : ca;
+      }
     }
     { sfpacket_t *pk = packet_for(flags, src, dst, t0, t1, sfr_2d ? 0 : sh->sort); if (!pk) return;
       for (t = 0; t + 2 < nidx; t += 3) {
         int i0 = idx[t], i1 = idx[t + 1], i2 = idx[t + 2], before = nverts;
-        if (cull_on) {                                               /* descarta faces de costas (shader->cull: 0 = só frente, 1 = só costas) */
-          const sfv_t *p0 = &scratch[i0], *p1 = &scratch[i1], *p2 = &scratch[i2];
-          float ax = p1->x - p0->x, ay = p1->y - p0->y, az = p1->z - p0->z, bx = p2->x - p0->x, by = p2->y - p0->y, bz = p2->z - p0->z;
-          float d = (ay * bz - az * by) * p0->x + (az * bx - ax * bz) * p0->y + (ax * by - ay * bx) * p0->z;
-          if (SFR_CULL_SIGN * (sh->cull ? -d : d) > 0) continue;
-        }
         if (vcode[i0] & vcode[i1] & vcode[i2]) continue;              /* todos fora do mesmo plano */
-        if (vcode[i0] | vcode[i1] | vcode[i2]) { cv_t poly[3]; poly[0] = vattr[i0]; poly[1] = vattr[i1]; poly[2] = vattr[i2]; emit_poly(poly, 3); }
+        if (vcode[i0] | vcode[i1] | vcode[i2]) {                      /* precisa recortar: faces de costas pelo produto vetorial em câmera */
+          cv_t poly[3];
+          if (cull_on) {                                             /* shader->cull: 0 = só frente, 1 = só costas */
+            const cam_t *p0 = &scratch[i0], *p1 = &scratch[i1], *p2 = &scratch[i2];
+            float ax = p1->x - p0->x, ay = p1->y - p0->y, az = p1->z - p0->z, bx = p2->x - p0->x, by = p2->y - p0->y, bz = p2->z - p0->z;
+            float d = (ay * bz - az * by) * p0->x + (az * bx - ax * bz) * p0->y + (ax * by - ay * bx) * p0->z;
+            if (SFR_CULL_SIGN * (sh->cull ? -d : d) > 0) continue;
+          }
+          poly[0] = vattr[i0]; poly[1] = vattr[i1]; poly[2] = vattr[i2];
+          poly[0].x = scratch[i0].x; poly[0].y = scratch[i0].y; poly[0].z = scratch[i0].z; poly[1].x = scratch[i1].x; poly[1].y = scratch[i1].y; poly[1].z = scratch[i1].z;
+          poly[2].x = scratch[i2].x; poly[2].y = scratch[i2].y; poly[2].z = scratch[i2].z; emit_poly(poly, 3);
+        } else if (cull_on && SFR_CULL_SIGN * (sh->cull ? 1 : -1) * ((vproj[i1][0] - vproj[i0][0]) * (vproj[i2][1] - vproj[i0][1]) - (vproj[i2][0] - vproj[i0][0]) * (vproj[i1][1] - vproj[i0][1])) > 0) continue;   /* área com sinal na tela: A = -fx*fy*d/(z0*z1*z2), então com z > 0 o sinal é o oposto do d do teste em câmera */
         else if (nverts + 3 <= SFR_MAX_VERTS) { put_proj(&vattr[i0], vproj[i0]); put_proj(&vattr[i1], vproj[i1]); put_proj(&vattr[i2], vproj[i2]); }
         else if (!overflow_warned) { ri.Printf(PRINT_WARNING, "SFR: buffer de vértices cheio\n"); overflow_warned = 1; }
         pk->count += nverts - before;
@@ -266,8 +284,7 @@ void SFR_EndFrame(void) {
     cmd(GC_DRAW_ARRAYS, 3); w((unsigned)p->first); w((unsigned)p->count); w(0);
   }
   cmd(GC_END, 0);
-  BRG_REG(0x24) = (unsigned)vbuf; BRG_REG(0x28) = (unsigned)nverts * 48; BRG_REG(0x20) = 4;      /* descarrega vértices e comandos (D-cache não é coerente) */
-  BRG_REG(0x24) = (unsigned)cmdbuf; BRG_REG(0x28) = cmdn * 4; BRG_REG(0x20) = 4;
+  BRG_REG(0x24) = (unsigned)cmdbuf; BRG_REG(0x28) = cmdn * 4; BRG_REG(0x20) = 4;      /* descarrega os comandos (D-cache não é coerente; os vértices já estão na VRAM) */
   while (GPU_REG(0x0C) & 1) BRG_REG(0x0F4) = 50;
   GPU_REG(0x00) = (unsigned)cmdbuf; GPU_REG(0x04) = cmdn; GPU_REG(0x08) = 1;
   do { st = GPU_REG(0x0C); if (st & 1) BRG_REG(0x0F4) = 100; } while (st & 1);
