@@ -14,7 +14,7 @@
 using namespace sf;
 
 int main(int argc, char** argv) {
-  std::string in, dvd, cmdline; bool video = false; std::vector<std::pair<int, std::string>> shots; u32 wlo = 0, whi = 0; bool prof = false; std::vector<std::pair<std::string, std::string>> data; u32 base = abi::IPL_LOAD_ADDR, entry = 0; double secs = 20; bool have_entry = false;
+  std::string in, dvd, cmdline, wav; bool video = false; std::vector<std::pair<int, std::string>> shots; u32 wlo = 0, whi = 0; bool prof = false; std::vector<std::pair<std::string, std::string>> data; u32 base = abi::IPL_LOAD_ADDR, entry = 0; double secs = 20; bool have_entry = false;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i]; auto nx = [&]() -> std::string { if (i + 1 >= argc) { std::fprintf(stderr, "faltou argumento de %s\n", a.c_str()); std::exit(2); } return argv[++i]; };
     if (a == "--base") base = (u32)std::strtoul(nx().c_str(), nullptr, 0); else if (a == "--entry") { entry = (u32)std::strtoul(nx().c_str(), nullptr, 0); have_entry = true; }
@@ -23,7 +23,7 @@ int main(int argc, char** argv) {
     else if (a == "--profile") prof = true;
     else if (a == "--video") video = true;
     else if (a == "--shot") { std::string v = nx(); size_t c = v.find(':'); shots.push_back({std::atoi(v.substr(0, c).c_str()), v.substr(c + 1)}); video = true; }
-    else if (a == "--dvd") dvd = nx(); else if (a == "--cmdline") cmdline = nx();
+    else if (a == "--dvd") dvd = nx(); else if (a == "--cmdline") cmdline = nx(); else if (a == "--wav") { wav = nx(); video = true; }   // --wav: grava o áudio da SnowPaula (renderizada a cada vblank: liga o vídeo)
     else if (a == "--data") { std::string v = nx(); size_t e = v.find('='); if (e == std::string::npos) { std::fprintf(stderr, "esperava caminho=arquivo\n"); return 2; } data.push_back({v.substr(0, e), v.substr(e + 1)}); }
     else in = a;
   }
@@ -69,6 +69,7 @@ int main(int argc, char** argv) {
     if (addr == abi::BRIDGE_BASE + abi::BR_SLEEP_US) sleeps[ring[(rn - 1) & 255]]++;
   };
   bool ok = s.run_until_halt((Ps)(secs * 1e12));
+  if (!wav.empty()) { s.sync_audio(); write_wav(wav, s.paula.pcm); std::printf("[sf100_run] áudio: %zu amostras em %s\n", s.paula.pcm.size() / 2, wav.c_str()); }
   if (std::getenv("SF_DVDSTAT")) { std::printf("[sf100_run] DVD: %llu comandos, %llu setores, %llu saltos; BR_SLEEP_US por PC:", (unsigned long long)dvd_cmds, (unsigned long long)dvd_secs, (unsigned long long)dvd_seeks); for (auto& kv : sleeps) std::printf(" %x(%llu)", kv.first, (unsigned long long)kv.second); std::printf("\n"); }
   s.bus.cache_flush_all(false); std::fflush(stdout);
   std::printf("[sf100_run] %s: pc=%08x d0=%d, %llu instruções, %llu ciclos, %.3f ms simulados, I-cache %llu/%llu, D-cache %llu/%llu\n", ok ? "HALT" : (s.cpu.halted ? "CPU parou (falha)" : "tempo esgotado"), s.cpu.pc, (int)s.cpu.d[0],
