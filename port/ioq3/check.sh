@@ -2,6 +2,7 @@
 # check.sh - compila todos os módulos do ioq3 para ColdFire e resume os erros por arquivo.   port/ioq3/check.sh [grupo...]
 source "$(dirname "$0")/modules.sh"
 OUT=${OUT:-/tmp/sf100_ioq3_obj}; mkdir -p "$OUT"
+"$(dirname "$0")/apply_patches.sh" >/dev/null || exit 1; gen_huff "$OUT" || exit 1
 ok=0; bad=0
 run_group() { local name=$1 defs=$2; shift 2; for f in "$@"; do
   o="$OUT/$name-$(echo "$f" | tr / _).o"

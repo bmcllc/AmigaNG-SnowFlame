@@ -103,6 +103,12 @@ void SFR_DrawEntityModel(const refEntity_t *e) {
   if (e->hModel <= 0 || e->hModel > nmodels) return;
   m = &models[e->hModel - 1];
   if (fr < 0 || fr >= m->nframes) fr = 0; if (ofr < 0 || ofr >= m->nframes) ofr = 0;
+  { const md3Frame_t *f0 = &m->frames[fr], *f1 = &m->frames[ofr]; float lc[3], c[3], r, sc = 1; int k;   /* R_CullModel: esfera do quadro antes de tocar nos vértices */
+    for (k = 0; k < 3; k++) lc[k] = f0->localOrigin[k] * (1 - bl) + f1->localOrigin[k] * bl;
+    for (k = 0; k < 3; k++) c[k] = e->origin[k] + lc[0] * e->axis[0][k] + lc[1] * e->axis[1][k] + lc[2] * e->axis[2][k];
+    r = (f0->radius > f1->radius ? f0->radius : f1->radius) + Distance(f0->localOrigin, f1->localOrigin);
+    if (e->nonNormalizedAxes) for (k = 0; k < 3; k++) { float l = VectorLength(e->axis[k]); if (l > sc) sc = l; }
+    if (SFR_CullSphere(c, r * sc)) return; }
   for (s = 0; s < m->nsurfs; s++) {
     sfmsurf_t *su = &m->surfs[s]; shader_t *sh = su->shader; float (*pos)[3]; byte (*col)[4]; int nv = su->nverts;
     if (e->customShader) sh = SFR_ShaderByHandle(e->customShader);

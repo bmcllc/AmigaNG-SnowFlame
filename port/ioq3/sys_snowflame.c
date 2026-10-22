@@ -40,7 +40,11 @@ static void spl_text(int x, int y, const char *t, int scale, unsigned rgb, int m
 static void spl_draw(const char *msg, unsigned color) {
   int i, x, y, bar = spl_pct * (SPL_W - 80) / 100;
   for (i = 0; i < SPL_W * SPL_H; i++) spl_buf[i] = 0xE0101822u;                                   /* fundo azul-grafite, quase opaco */
+#ifdef SF_NATIVE_GAME
+  spl_text(40, 6, "QUAKE III ARENA", 2, 0xFFB000, SPL_W);
+#else
   spl_text(40, 6, "OPENARENA", 2, 0xFFB000, SPL_W);
+#endif
   spl_text(40, 46, msg, 1, color, SPL_W - 40);
   for (y = 74; y < 82; y++) for (x = 40; x < SPL_W - 40; x++) spl_buf[y * SPL_W + x] = (x - 40 < bar) ? 0xFFFF8A00u : 0xFF2A3440u;
   spl_flush();
@@ -83,7 +87,29 @@ static void sf_leave(int code, int wait_ms) {
   for (;;) BR(0x0F4) = 1000000u;
 }
 void Sys_Init(void) { Cvar_Set("arch", "m68k-coldfire"); Cvar_Set("username", "player"); }
+#ifdef SF_NATIVE_GAME
+/* módulos de jogo nativos (build_ioq3.sh NATIVE=1): qagame, cgame e ui compilados com o GCC e ligados no motor, com os símbolos internos
+   locais e marcas em .data/.bss (n_data_start...). "Carregar" de novo restaura .data e zera .bss, como um dlopen novo faria. */
+typedef void (*sf_dllentry_t)(intptr_t(QDECL *)(intptr_t, ...));
+#define SFMOD(n) extern void n##_dllEntry(intptr_t(QDECL *)(intptr_t, ...)); extern intptr_t n##_vmMain(int, int, int, int, int, int, int, int, int, int, int, int, int); \
+  extern char n##_data_start[], n##_data_end[], n##_bss_start[], n##_bss_end[];
+SFMOD(qagame) SFMOD(cgame) SFMOD(ui)
+#define SFMOD_ENT(n) { #n, n##_dllEntry, n##_vmMain, n##_data_start, n##_data_end, n##_bss_start, n##_bss_end, NULL }
+static struct { const char *name; sf_dllentry_t entry; vmMainProc main; char *d0, *d1, *b0, *b1, *saved; } sf_mods[] = { SFMOD_ENT(qagame), SFMOD_ENT(cgame), SFMOD_ENT(ui) };
+void *QDECL Sys_LoadGameDll(const char *name, vmMainProc *entryPoint, intptr_t(QDECL *systemcalls)(intptr_t, ...)) {
+  unsigned i;
+  for (i = 0; i < sizeof(sf_mods) / sizeof(sf_mods[0]); i++) if (!strcmp(name, sf_mods[i].name)) {
+    if (!sf_mods[i].saved) { sf_mods[i].saved = malloc(sf_mods[i].d1 - sf_mods[i].d0); if (!sf_mods[i].saved) return NULL; memcpy(sf_mods[i].saved, sf_mods[i].d0, sf_mods[i].d1 - sf_mods[i].d0); }
+    else memcpy(sf_mods[i].d0, sf_mods[i].saved, sf_mods[i].d1 - sf_mods[i].d0);
+    memset(sf_mods[i].b0, 0, sf_mods[i].b1 - sf_mods[i].b0);
+    sf_mods[i].entry(systemcalls); *entryPoint = sf_mods[i].main;
+    return &sf_mods[i];
+  }
+  return NULL;
+}
+#else
 void *QDECL Sys_LoadGameDll(const char *name, vmMainProc *entryPoint, intptr_t(QDECL *systemcalls)(intptr_t, ...)) { (void)name; (void)entryPoint; (void)systemcalls; return NULL; }   /* sem dlopen: o jogo roda como QVM */
+#endif
 void Sys_UnloadDll(void *h) { (void)h; }
 qboolean Sys_DllExtension(const char *name) { (void)name; return qfalse; }
 char *Sys_GetCurrentUser(void) { return "player"; }
@@ -273,7 +299,12 @@ int main(void) {
   /* a linha de comando do motor vem do host em SRAM_BASE+0x200 (NUL-terminada); sem ela, usa o padrão */
   static char cmd[1024];
   /* padrão: o jogo (OpenArena, mapa oa_dm1 do pk3 montado por tools/mkoa.py) em tela cheia sobre o FlameCore, sem bots (não há .aas) */
+#ifdef SF_NATIVE_GAME
+  /* versão nativa: Quake 3 (pk3 originais em baseq3/ no disco), qagame/cgame/ui ligados no motor */
+  const char *dflt = "+set com_basegame baseq3 +set vm_game 0 +set vm_cgame 0 +set vm_ui 0 +set com_hunkMegs 20+set com_zoneMegs 8 +set com_soundMegs 2 +set com_maxfps 60 +set fs_basepath . +set sv_pure 0 +set bot_enable 0 +set s_initsound 0 +devmap q3dm1";
+#else
   const char *dflt = "+set com_hunkMegs 24 +set com_zoneMegs 8 +set com_soundMegs 2 +set com_maxfps 60 +set fs_basepath . +set sv_pure 0 +set bot_enable 0 +set s_initsound 0 +set model sarge +set headmodel sarge +devmap oa_dm1";
+#endif
   if (SRAM[0x200]) { int i; for (i = 0; i < 1023 && SRAM[0x200 + i]; i++) cmd[i] = SRAM[0x200 + i]; cmd[i] = 0; } else strcpy(cmd, dflt);
   spl_wait_map = strstr(cmd, "map ") != NULL;
   spl_start();

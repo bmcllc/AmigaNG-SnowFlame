@@ -75,15 +75,15 @@ def shader_index(name):
     if name not in shaders: shaders.append(name)
     return shaders.index(name)
 def dv(xyz, st, lm, n, col=(255, 255, 255, 255)): return struct.pack("<3f2f2f3f4B", *xyz, *st, *lm, *n, *col)
-def add_surface(shader, stype, vs, idx, lmnum, patch=(0, 0)):
+def add_surface(shader, stype, vs, idx, lmnum, patch=(0, 0), n=(0, 0, 1)):   # n: normal da face planar (lightmapVecs[2], como o q3map)
     surfaces.append(struct.pack("<12i3f9f2i", shader_index(shader), -1, stype, len(verts), len(vs), len(indexes), len(idx), lmnum, 0, 0, 128, 128,
-                                0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, patch[0], patch[1]))
+                                0, 0, 0, 1, 0, 0, 0, 1, 0, *n, patch[0], patch[1]))
     verts.extend(vs); indexes.extend(idx)
 def quad(shader, p0, p1, p2, p3, n, uv_scale, lm_rect, lm=0):
     (lx0, ly0, lx1, ly1) = lm_rect
     vs = [dv(p0, (0, 0), (lx0, ly0), n), dv(p1, (uv_scale, 0), (lx1, ly0), n), dv(p2, (uv_scale, uv_scale), (lx1, ly1), n), dv(p3, (0, uv_scale), (lx0, ly1), n)]
     base = 0
-    add_surface(shader, 1, vs, [0, 2, 1, 0, 3, 2], lm)   # enrolamento do Q3 (horário visto da frente): o renderer descarta faces de costas
+    add_surface(shader, 1, vs, [0, 2, 1, 0, 3, 2], lm, n=n)   # enrolamento do Q3 (horário visto da frente): o renderer descarta faces de costas
 R = 256; H = 192
 # lightmap 0: gradiente quente no chão/paredes; lightmap 1: tom azulado
 lm = []

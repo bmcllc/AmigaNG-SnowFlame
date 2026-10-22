@@ -42,7 +42,7 @@ static void draw_beam(const refEntity_t *e) {
 
 void SFR_RenderScene(const refdef_t *fd) {
   int i, first; extern void SFR_SetClear(unsigned argb);
-  SFR_SetView(fd); sfr_2d = 0; first = SFR_PacketCount();
+  SFR_SetView(fd); SFR_SetupFrustum(); sfr_2d = 0; first = SFR_PacketCount();
   if (!(fd->rdflags & RDF_NOWORLDMODEL)) SFR_RenderWorld(); else SFR_SetClear(0xFF000000u);
   for (i = 0; i < nents; i++) {
     const refEntity_t *e = &ents[i];

@@ -2,6 +2,7 @@
 # modules.sh - lista de fontes do ioquake3 compiladas para o SF-100 (cada módulo com seus defines) e função de compilação com o GCC cross.
 IOQ3=${IOQ3:-"$(cd "$(dirname "$0")/../../.." && pwd)/Games-To-Port/ioq3"}
 HERE=$(cd "$(dirname "$0")/.." && pwd)
+if ! command -v m68k-linux-gnu-gcc-14 >/dev/null 2>&1 && [ -z "$SF_M68K_CROSS" ] && [ -d "$HOME/.local/opt/m68k-cross" ]; then export SF_M68K_CROSS="$HOME/.local/opt/m68k-cross"; fi
 if [ -n "$SF_M68K_CROSS" ]; then export PATH="$SF_M68K_CROSS/usr/bin:$PATH"; export LD_LIBRARY_PATH="$SF_M68K_CROSS/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"; fi
 CC=${CC:-m68k-linux-gnu-gcc-14}
 GCCINC=$($CC -print-file-name=include)   # cabeçalhos freestanding do GCC (stddef, stdarg, stdint, float, limits); /usr/include do host fica de fora
@@ -21,7 +22,7 @@ GAME=(game/ai_chat.c game/ai_cmd.c game/ai_dmnet.c game/ai_dmq3.c game/ai_main.c
   game/g_active.c game/g_arenas.c game/g_bot.c game/g_client.c game/g_cmds.c game/g_combat.c game/g_items.c game/g_main.c game/g_mem.c game/g_misc.c game/g_missile.c game/g_mover.c
   game/g_session.c game/g_spawn.c game/g_svcmds.c game/g_syscalls.c game/g_target.c game/g_team.c game/g_trigger.c game/g_utils.c game/g_weapon.c qcommon/q_math.c qcommon/q_shared.c)
 CGAME=($(cd "$CODE" && ls cgame/*.c | grep -v -e cg_newdraw.c) game/bg_lib.c game/bg_misc.c game/bg_pmove.c game/bg_slidemove.c qcommon/q_math.c qcommon/q_shared.c)
-UI=($(cd "$CODE" && ls q3_ui/*.c | grep -v -e ui_login.c -e ui_rankings.c -e ui_rankstatus.c -e ui_signup.c -e ui_specifyleague.c) game/bg_lib.c game/bg_misc.c qcommon/q_math.c qcommon/q_shared.c)
+UI=($(cd "$CODE" && ls q3_ui/*.c | grep -v -e ui_login.c -e ui_rankings.c -e ui_rankstatus.c -e ui_signup.c -e ui_specifyleague.c) ui/ui_syscalls.c game/bg_lib.c game/bg_misc.c qcommon/q_math.c qcommon/q_shared.c)
 ZLIB=(thirdparty/zlib-1.3.1/adler32.c thirdparty/zlib-1.3.1/crc32.c thirdparty/zlib-1.3.1/inflate.c thirdparty/zlib-1.3.1/inftrees.c thirdparty/zlib-1.3.1/inffast.c thirdparty/zlib-1.3.1/zutil.c)
 # interpretador da QVM do SF-100 (substitui qcommon/vm_interpreted.c): relativo a port/ioq3
 VMSF=vm_interpreted_sf.c
@@ -29,5 +30,14 @@ VMSF=vm_interpreted_sf.c
 SFR=(sfr/sfr_image.c sfr/sfr_shader.c sfr/sfr_backend.c sfr/sfr_world.c sfr/sfr_model.c sfr/sfr_scene.c sfr/sfr_init.c sfr/jpeg_stubs.c)
 RCOMMON=(renderercommon/tr_image_tga.c renderercommon/tr_image_jpg.c renderercommon/tr_image_png.c renderercommon/tr_image_bmp.c renderercommon/tr_image_pcx.c renderercommon/puff.c renderercommon/tr_font.c)
 JPEG=(jaricom jcomapi jdapimin jdapistd jdarith jdatasrc jdcoefct jdcolor jddctmgr jdhuff jdinput jdmainct jdmarker jdmaster jdmerge jdpostct jdsample jdtrans jerror jidctflt jidctfst jidctint jmemmgr jmemnobs jquant1 jquant2 jutils)
+# gen_huff pasta: gera pasta/sf_huff.h (árvore inicial de Huffman do Q3 calculada no host por huffgen.c com o huffman.c do ioq3;
+# o msg.c a restaura em MSG_initHuffman) e põe a pasta no caminho de include
+gen_huff() {
+  if [ ! -f "$1/sf_huff.h" ] || [ "$HERE/ioq3/huffgen.c" -nt "$1/sf_huff.h" ]; then
+    sed -n '/^int msg_hData\[256\] = {/,/^};/p' "$CODE/qcommon/msg.c" | sed '1d;$d' > "$1/msg_hdata.h"
+    ${HOSTCC:-gcc} -O1 -w "-I$CODE/qcommon" "-I$1" -DSF_HDATA='"msg_hdata.h"' "$HERE/ioq3/huffgen.c" "$CODE/qcommon/huffman.c" -o "$1/huffgen" && "$1/huffgen" "$1/sf_huff.h" >/dev/null || return 1
+  fi
+  CFLAGS_COMMON+=("-I$1")
+}
 # compile_one grupo_de_defines arquivo.c saida.o
 compile_one() { local defs=$1 src=$2 out=$3; $CC "${CFLAGS_COMMON[@]}" $defs -c "$CODE/$src" -o "$out"; }

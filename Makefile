@@ -127,6 +127,23 @@ dvd-oa: oa
 play-oa: dvd-oa build/sf100_play
 	./build/sf100_play out/snowflame.dvd
 
+# Quake 3 (ioq3 com qagame/cgame/ui nativos): `make q3` compila o motor em out/q3/q3.bin; `make dvd-q3` reempacota os pk3 de Q3_BASE
+# (os seus pak0..pak8.pk3 do Quake 3; não vêm no repositório) e põe tudo no DVD; `make play-q3` abre o jogo (ver docs/PORT.md)
+Q3_DIR ?= out/q3
+Q3_BASE ?= port/ioq3/baseq3
+q3:
+	env -u CC -u CXX NATIVE=1 OBJ=$(Q3_DIR)/obj port/ioq3/build_ioq3.sh $(Q3_DIR)/q3.bin
+
+# os pk3 viram um só, com os arquivos na ordem em que o jogo os lê (port/ioq3/q3order.txt): menos saltos da cabeça do DVD
+$(Q3_DIR)/pak0.pk3: tools/mkq3.py port/ioq3/q3order.txt $(wildcard $(Q3_BASE)/*.pk3)
+	python3 tools/mkq3.py $(Q3_BASE) $@ port/ioq3/q3order.txt
+
+dvd-q3: q3 $(Q3_DIR)/pak0.pk3
+	$(MAKE) dvd GAMES="$(GAMES) --bin quake3=$(Q3_DIR)/q3.bin --data baseq3/pak0.pk3=$(Q3_DIR)/pak0.pk3"
+
+play-q3: dvd-q3 build/sf100_play
+	./build/sf100_play out/snowflame.dvd
+
 boot: dvd $(B)/sf100_boot
 	./$(B)/sf100_boot out/snowflame.dvd --frames 400 --shot 100 --shot 250 --shot 399
 
@@ -153,4 +170,4 @@ verify:
 clean:
 	rm -rf build out
 
-.PHONY: all test demo verify techdemos dvd boot play oa dvd-oa play-oa clean
+.PHONY: all test demo verify techdemos dvd boot play oa dvd-oa play-oa q3 dvd-q3 play-q3 clean

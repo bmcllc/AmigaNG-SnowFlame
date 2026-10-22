@@ -66,6 +66,7 @@ sfimg_t *SFR_CreateImage(const char *name, const byte *rgba, int w, int h, int m
   if (!addr) { if (base) free(base); return sfr_defaultimage; }
   dst = (unsigned short *)addr; cw = dw; ch = dh;
   cur = malloc((size_t)dw * dh * 4); nxt = malloc((size_t)dw * dh * 4);
+  if (!cur || !nxt) { ri.Printf(PRINT_WARNING, "SFR: sem memória para %s\n", name); free(cur); free(nxt); if (base) free(base); vram_next = addr; return sfr_defaultimage; }
   memcpy(cur, base ? base : rgba, (size_t)dw * dh * 4);
   for (lvl = 0; lvl < nl; lvl++) {
     put_level(dst + off / 2, cur, cw, ch, alpha); off += (unsigned)cw * ch * 2;

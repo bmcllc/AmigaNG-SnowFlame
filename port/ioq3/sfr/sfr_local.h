@@ -72,7 +72,7 @@ typedef struct { float x, y, z; float u, v, u1, v1; float r, g, b, a; } sfv_t;  
 typedef struct { int first, count, flags, src, dst; unsigned a0, a1; byte nt0, nt1; int lw0, lh0, fmt0, lw1, lh1, fmt1, fl0, fl1, nl0, nl1, sortkey; } sfpacket_t;
 void SFR_BackendInit(void); void SFR_BackendShutdown(void);
 void SFR_BeginFrame(void); void SFR_EndFrame(void);
-typedef struct { float org[3], axis[3][3]; float fovx, fovy; int x, y, w, h; float znear, zfar; float tx, ty; /* tan(fov/2), calculado uma vez por vista */ float depthk; /* zfar / (zfar - znear) */ float fx, fy, cx0, cy0; /* projeção: pixels por unidade e centro */ } sfview_t;
+typedef struct { float org[3], axis[3][3]; float fovx, fovy; int x, y, w, h; float znear, zfar; float tx, ty; /* tan(fov/2), calculado uma vez por vista */ float depthk; /* zfar / (zfar - znear) */ float fx, fy, cx0, cy0; /* projeção: pixels por unidade e centro */ float time; /* refdef.time em s: anima os shaders 3D, como no Q3 */ } sfview_t;
 extern sfview_t sfr_view;
 extern int sfr_allow_cull;   /* 1 enquanto o chamador desenha mundo/modelos (descarte de faces de costas pelo shader->cull) */
 extern int sfr_2d;                                   /* 1 = desenho 2D (sem profundidade) */
@@ -88,7 +88,7 @@ extern float sfr_color2d[4];
 
 /* ---- mundo ---- */
 void SFR_LoadWorld(const char *name); void SFR_FreeWorld(void);
-void SFR_RenderWorld(void);
+void SFR_RenderWorld(void); void SFR_SetupFrustum(void); int SFR_CullSphere(const float c[3], float r);   /* frustum da vista atual (SFR_RenderScene) */
 extern qboolean sfr_world_loaded;
 qboolean SFR_GetEntityToken(char *buf, int size);
 qboolean SFR_InPVS(const vec3_t a, const vec3_t b);

@@ -36,16 +36,24 @@ void SFR_SetView(const refdef_t *fd) {
   sfr_view.znear = 8.0f; sfr_view.zfar = 16384.0f; sfr_view.depthk = sfr_view.zfar / (sfr_view.zfar - sfr_view.znear);
   tx = tanf(fd->fov_x * (float)M_PI / 360.0f); ty = tanf(fd->fov_y * (float)M_PI / 360.0f);
   sfr_view.tx = tx; sfr_view.ty = ty; view_derive();
+  sfr_view.time = fd->time * 0.001f;
 }
 
 void SFR_BeginFrame(void) { nverts = 0; npackets = 0; scene_first_packet = 0; have_3d = 0; frame_clear = 0xFF000000u; overflow_warned = 0; sfr_2d = 1; }
 int SFR_PacketCount(void) { return npackets; }
 void SFR_Packets(int *np, int *nv) { *np = npackets; *nv = nverts; }
 
-/* ordena (estável) os pacotes criados desde 'first' pela chave de sort do shader */
+/* ordena (estável) os pacotes criados desde 'first' pela chave de sort do shader. Só a ordem de desenho (order[]) muda: mover os
+   pacotes em si custava O(n²) cópias de 84 bytes (16% da CPU no Q3) */
+static int order[SFR_MAX_PACKETS];
+static int cmp_order(const void *a, const void *b) {
+  int x = *(const int *)a, y = *(const int *)b, kx = packets[x].sortkey, ky = packets[y].sortkey;
+  return kx != ky ? (kx < ky ? -1 : 1) : x - y;                        /* desempate pelo índice: estável */
+}
 void SFR_FlushSort(int first) {
-  int i, j; sfpacket_t t;
-  for (i = first + 1; i < npackets; i++) { t = packets[i]; for (j = i; j > first && packets[j - 1].sortkey > t.sortkey; j--) packets[j] = packets[j - 1]; packets[j] = t; }
+  int i;
+  for (i = first + 1; i < npackets && packets[order[i - 1]].sortkey <= packets[order[i]].sortkey; i++) ;
+  if (i < npackets) qsort(order + first, (size_t)(npackets - first), sizeof order[0], cmp_order);
 }
 
 /* ---------------- recorte e projeção ---------------- */
@@ -82,15 +90,24 @@ static void put_vertex(const cv_t *c, float cx0, float cy0, float fx, float fy) 
   nverts++;
 }
 
+/* códigos de saída: 1 near, 2 +x, 4 -x, 8 +y, 16 -y (faixa de guarda 1,4x) */
+static unsigned outcode(float x, float y, float z, float txg, float tyg, float zn) {
+  const float ztx = z * txg, zty = z * tyg;
+  return (z < zn ? 1u : 0u) | (x + ztx < 0 ? 2u : 0u) | (ztx - x < 0 ? 4u : 0u) | (y + zty < 0 ? 8u : 0u) | (zty - y < 0 ? 16u : 0u);
+}
+static void put_proj(const cv_t *c, const float pr[4]) {             /* como put_vertex, com a projeção já calculada */
+  unsigned *p = vbuf + nverts * 12; union { float f; unsigned u; } cvt;
+#define PF(i, v) do { cvt.f = (v); p[i] = cvt.u; } while (0)
+  PF(0, pr[0]); PF(1, pr[1]); PF(2, pr[2]); PF(3, pr[3]);
+  PF(4, c->r); PF(5, c->g); PF(6, c->b); PF(7, c->a); PF(8, c->u); PF(9, c->v); PF(10, c->u1); PF(11, c->v1);
+#undef PF
+  nverts++;
+}
 static void emit_poly(cv_t *poly, int n) {
   const float gb = 1.4f, tx = sfr_view.tx, ty = sfr_view.ty, txg = tx * gb, tyg = ty * gb, zn = sfr_view.znear;
   const float fx = sfr_view.fx, fy = sfr_view.fy, cx0 = sfr_view.cx0, cy0 = sfr_view.cy0;
   cv_t *src = poly, *dst = clipbuf_b; unsigned orall = 0, andall = 31u; int i;
-  for (i = 0; i < n; i++) {                                           /* códigos de saída: 1 near, 2 +x, 4 -x, 8 +y, 16 -y (faixa de guarda 1,4x) */
-    const float x = poly[i].x, y = poly[i].y, z = poly[i].z, ztx = z * txg, zty = z * tyg;
-    unsigned o = (z < zn ? 1u : 0u) | (x + ztx < 0 ? 2u : 0u) | (ztx - x < 0 ? 4u : 0u) | (y + zty < 0 ? 8u : 0u) | (zty - y < 0 ? 16u : 0u);
-    orall |= o; andall &= o;
-  }
+  for (i = 0; i < n; i++) { unsigned o = outcode(poly[i].x, poly[i].y, poly[i].z, txg, tyg, zn); orall |= o; andall &= o; }
   if (andall) return;                                                 /* todos fora do mesmo plano: nada a desenhar */
   if (orall) {                                                        /* só recorta contra os planos que algum vértice viola */
     if (orall & 1u)  { n = clip_plane(src, n, dst, 0, 0, 1, zn);        if (n < 3) return; src = dst; dst = (src == clipbuf_a) ? clipbuf_b : clipbuf_a; }
@@ -106,9 +123,9 @@ static void emit_poly(cv_t *poly, int n) {
 /* pacote de desenho corrente (mesmo estado = estende) */
 static sfpacket_t *packet_for(int flags, int src, int dst, const sfimg_t *t0, const sfimg_t *t1, int sortkey) {
   sfpacket_t *p = npackets ? &packets[npackets - 1] : NULL; unsigned a0 = t0 ? t0->addr : 0, a1 = t1 ? t1->addr : 0;
-  if (p && p->count && p->first + p->count == nverts && p->flags == flags && p->src == src && p->dst == dst && p->a0 == a0 && p->a1 == a1 && p->sortkey == sortkey) return p;
+  if (p && order[npackets - 1] == npackets - 1 && p->count && p->first + p->count == nverts && p->flags == flags && p->src == src && p->dst == dst && p->a0 == a0 && p->a1 == a1 && p->sortkey == sortkey) return p;
   if (npackets >= SFR_MAX_PACKETS) return NULL;
-  p = &packets[npackets++]; memset(p, 0, sizeof *p); p->first = nverts; p->flags = flags; p->src = src; p->dst = dst; p->a0 = a0; p->a1 = a1; p->sortkey = sortkey;
+  order[npackets] = npackets; p = &packets[npackets++]; memset(p, 0, sizeof *p); p->first = nverts; p->flags = flags; p->src = src; p->dst = dst; p->a0 = a0; p->a1 = a1; p->sortkey = sortkey;
   if (t0) { p->lw0 = t0->lw; p->lh0 = t0->lh; p->fmt0 = t0->fmt; p->fl0 = t0->flags; p->nl0 = t0->nlevels; }
   if (t1) { p->lw1 = t1->lw; p->lh1 = t1->lh; p->fmt1 = t1->fmt; p->fl1 = t1->flags; p->nl1 = t1->nlevels; }
   return p;
@@ -123,21 +140,37 @@ static void stage_uv(const sfstage_t *st, float t, float *u, float *v) {
 
 /* desenha triângulos de um shader: pos em mundo (ou já em câmera se cam_space), st/lm/col por vértice */
 static sfv_t *scratch; static int scratch_cap;
+/* por vértice da chamada: código de saída e projeção (x, y de tela, profundidade, 1/z; só vale com código 0); por passe: atributos */
+static unsigned char *vcode; static float (*vproj)[4]; static cv_t *vattr;
 #ifndef SFR_CULL_SIGN
 #define SFR_CULL_SIGN 1.0f
 #endif
 void SFR_DrawShaderTris(shader_t *sh, int nv, const float (*pos)[3], const float (*st)[2], const float (*lm)[2], const byte (*col)[4], int nidx, const int *idx, sfimg_t *lm_img, const byte ent_rgba[4]) {
-  int pass, i, t, used_lm = 0; float time = SFR_Time();
+  int pass, i, t, used_lm = 0; float time = sfr_2d ? SFR_Time() : sfr_view.time;   /* 2D: relógio (como RB_SetGL2D); 3D: tempo da cena */
   const int cull_on = sfr_allow_cull && !sfr_cull_disable && !sfr_2d && sh->cull != 2;   /* o chamador liga sfr_allow_cull só para esta chamada */
   sfr_allow_cull = 0;
   if (sh->nodraw || sh->sky || nv < 3 || nidx < 3) return;
-  if (nv > scratch_cap) { free(scratch); scratch_cap = nv + 256; scratch = malloc(sizeof(sfv_t) * (size_t)scratch_cap); }
+  if (nv > scratch_cap) {
+    free(scratch); free(vcode); free(vproj); free(vattr); scratch_cap = nv + 256;
+    scratch = malloc(sizeof(sfv_t) * (size_t)scratch_cap); vcode = malloc((size_t)scratch_cap); vproj = malloc(sizeof(*vproj) * (size_t)scratch_cap); vattr = malloc(sizeof(cv_t) * (size_t)scratch_cap);
+    if (!scratch || !vcode || !vproj || !vattr) { free(scratch); free(vcode); free(vproj); free(vattr); scratch = NULL; vcode = NULL; vproj = NULL; vattr = NULL; scratch_cap = 0; return; }
+  }
   for (i = 0; i < nv; i++) {                                         /* mundo -> câmera */
     float d[3]; VectorSubtract(pos[i], sfr_view.org, d);
     scratch[i].x = -DotProduct(d, sfr_view.axis[1]); scratch[i].y = DotProduct(d, sfr_view.axis[2]); scratch[i].z = DotProduct(d, sfr_view.axis[0]);
   }
   /* descarta se tudo atrás da câmera */
   { int front = 0; for (i = 0; i < nv; i++) if (scratch[i].z > sfr_view.znear) { front = 1; break; } if (!front) return; }
+  { const float gb = 1.4f, txg = sfr_view.tx * gb, tyg = sfr_view.ty * gb, zn = sfr_view.znear, fx = sfr_view.fx, fy = sfr_view.fy, cx0 = sfr_view.cx0, cy0 = sfr_view.cy0;
+    for (i = 0; i < nv; i++) {                                        /* mesmas contas de put_vertex, uma vez por vértice */
+      const sfv_t *c = &scratch[i];
+      if ((vcode[i] = (unsigned char)outcode(c->x, c->y, c->z, txg, tyg, zn)) == 0) {
+        float rhw = 1.0f / c->z, depth = sfr_view.depthk * (1.0f - sfr_view.znear * rhw);
+        if (depth < 0) depth = 0; if (depth > 1) depth = 1;
+        vproj[i][0] = cx0 + c->x * rhw * fx; vproj[i][1] = cy0 - c->y * rhw * fy; vproj[i][2] = depth; vproj[i][3] = rhw;
+      }
+    }
+  }
   for (pass = 0; pass < sh->nstages; pass++) {
     const sfstage_t *s = &sh->st[pass]; sfimg_t *t0 = NULL, *t1 = NULL; int flags, src = BFONE, dst = BFZERO;
     if (s->is_lightmap) continue;
@@ -147,34 +180,37 @@ void SFR_DrawShaderTris(shader_t *sh, int nv, const float (*pos)[3], const float
     if (s->blend == 1) { flags |= ST_BLEND; src = s->src; dst = s->dst; }
     else if (!sfr_2d) flags |= ST_DEPTH_WRITE;
     if (s->atest) flags |= ST_ATEST;
+    for (i = 0; i < nv; i++) {                                        /* atributos do passe, uma vez por vértice */
+      cv_t *c = &vattr[i]; float u = st[i][0], v = st[i][1];
+      c->x = scratch[i].x; c->y = scratch[i].y; c->z = scratch[i].z;
+      if (s->tcgen_env) { u = 0.5f; v = 0.5f; }
+      stage_uv(s, time, &u, &v); c->u = u; c->v = v;
+      c->u1 = lm ? lm[i][0] : 0; c->v1 = lm ? lm[i][1] : 0;
+      switch (s->rgbgen) {
+        case RGB_VERTEX: if (col) { c->r = col[i][0] * (1.0f / 255); c->g = col[i][1] * (1.0f / 255); c->b = col[i][2] * (1.0f / 255); } else c->r = c->g = c->b = 1; break;
+        case RGB_ONEMINUSVERTEX: if (col) { c->r = 1 - col[i][0] * (1.0f / 255); c->g = 1 - col[i][1] * (1.0f / 255); c->b = 1 - col[i][2] * (1.0f / 255); } else c->r = c->g = c->b = 0; break;
+        case RGB_LIGHTING: if (col) { c->r = col[i][0] * (1.0f / 255); c->g = col[i][1] * (1.0f / 255); c->b = col[i][2] * (1.0f / 255); break; }
+        case RGB_ENTITY: if (ent_rgba) { c->r = ent_rgba[0] * (1.0f / 255); c->g = ent_rgba[1] * (1.0f / 255); c->b = ent_rgba[2] * (1.0f / 255); } else c->r = c->g = c->b = 1; break;
+        case RGB_CONST: c->r = s->rgb[0] * (1.0f / 255); c->g = s->rgb[1] * (1.0f / 255); c->b = s->rgb[2] * (1.0f / 255); break;
+        default: c->r = c->g = c->b = 1; break;
+      }
+      c->a = 1;
+      if (s->alphagen == AG_VERTEX && col) c->a = col[i][3] * (1.0f / 255); else if (s->alphagen == AG_ENTITY && ent_rgba) c->a = ent_rgba[3] * (1.0f / 255);
+      else if (s->rgbgen == RGB_VERTEX && sfr_2d && col) c->a = col[i][3] * (1.0f / 255);
+    }
     { sfpacket_t *pk = packet_for(flags, src, dst, t0, t1, sfr_2d ? 0 : sh->sort); if (!pk) return;
       for (t = 0; t + 2 < nidx; t += 3) {
-        cv_t poly[3]; int k, before = nverts;
+        int i0 = idx[t], i1 = idx[t + 1], i2 = idx[t + 2], before = nverts;
         if (cull_on) {                                               /* descarta faces de costas (shader->cull: 0 = só frente, 1 = só costas) */
-          const sfv_t *p0 = &scratch[idx[t]], *p1 = &scratch[idx[t + 1]], *p2 = &scratch[idx[t + 2]];
+          const sfv_t *p0 = &scratch[i0], *p1 = &scratch[i1], *p2 = &scratch[i2];
           float ax = p1->x - p0->x, ay = p1->y - p0->y, az = p1->z - p0->z, bx = p2->x - p0->x, by = p2->y - p0->y, bz = p2->z - p0->z;
           float d = (ay * bz - az * by) * p0->x + (az * bx - ax * bz) * p0->y + (ax * by - ay * bx) * p0->z;
           if (SFR_CULL_SIGN * (sh->cull ? -d : d) > 0) continue;
         }
-        for (k = 0; k < 3; k++) {
-          int vi = idx[t + k]; cv_t *c = &poly[k]; float u = st[vi][0], v = st[vi][1];
-          c->x = scratch[vi].x; c->y = scratch[vi].y; c->z = scratch[vi].z;
-          if (s->tcgen_env) { u = 0.5f; v = 0.5f; }
-          stage_uv(s, time, &u, &v); c->u = u; c->v = v;
-          c->u1 = lm ? lm[vi][0] : 0; c->v1 = lm ? lm[vi][1] : 0;
-          switch (s->rgbgen) {
-            case RGB_VERTEX: if (col) { c->r = col[vi][0] * (1.0f / 255); c->g = col[vi][1] * (1.0f / 255); c->b = col[vi][2] * (1.0f / 255); } else c->r = c->g = c->b = 1; break;
-            case RGB_ONEMINUSVERTEX: if (col) { c->r = 1 - col[vi][0] * (1.0f / 255); c->g = 1 - col[vi][1] * (1.0f / 255); c->b = 1 - col[vi][2] * (1.0f / 255); } else c->r = c->g = c->b = 0; break;
-            case RGB_LIGHTING: if (col) { c->r = col[vi][0] * (1.0f / 255); c->g = col[vi][1] * (1.0f / 255); c->b = col[vi][2] * (1.0f / 255); break; }
-            case RGB_ENTITY: if (ent_rgba) { c->r = ent_rgba[0] * (1.0f / 255); c->g = ent_rgba[1] * (1.0f / 255); c->b = ent_rgba[2] * (1.0f / 255); } else c->r = c->g = c->b = 1; break;
-            case RGB_CONST: c->r = s->rgb[0] * (1.0f / 255); c->g = s->rgb[1] * (1.0f / 255); c->b = s->rgb[2] * (1.0f / 255); break;
-            default: c->r = c->g = c->b = 1; break;
-          }
-          c->a = 1;
-          if (s->alphagen == AG_VERTEX && col) c->a = col[vi][3] * (1.0f / 255); else if (s->alphagen == AG_ENTITY && ent_rgba) c->a = ent_rgba[3] * (1.0f / 255);
-          else if (s->rgbgen == RGB_VERTEX && sfr_2d && col) c->a = col[vi][3] * (1.0f / 255);
-        }
-        emit_poly(poly, 3);
+        if (vcode[i0] & vcode[i1] & vcode[i2]) continue;              /* todos fora do mesmo plano */
+        if (vcode[i0] | vcode[i1] | vcode[i2]) { cv_t poly[3]; poly[0] = vattr[i0]; poly[1] = vattr[i1]; poly[2] = vattr[i2]; emit_poly(poly, 3); }
+        else if (nverts + 3 <= SFR_MAX_VERTS) { put_proj(&vattr[i0], vproj[i0]); put_proj(&vattr[i1], vproj[i1]); put_proj(&vattr[i2], vproj[i2]); }
+        else if (!overflow_warned) { ri.Printf(PRINT_WARNING, "SFR: buffer de vértices cheio\n"); overflow_warned = 1; }
         pk->count += nverts - before;
       }
     }
@@ -221,7 +257,7 @@ void SFR_EndFrame(void) {
   cmd(GC_CLEAR, 3); w(frame_clear); w(f2u(1.0f)); w(3);
   cmd(GC_VERTEX_BASE, 1); w((unsigned)vbuf);
   for (i = 0; i < npackets; i++) {
-    sfpacket_t *p = &packets[i];
+    sfpacket_t *p = &packets[order[i]];
     if (p->count <= 0) continue;
     if (p->a0 != last_a0) { settex(0, p->a0, p->lw0, p->lh0, p->fmt0, p->fl0, p->nl0); last_a0 = p->a0; }
     if ((p->flags & ST_TEX1) && p->a1 != last_a1) { settex(1, p->a1, p->lw1, p->lh1, p->fmt1, p->fl1, p->nl1); last_a1 = p->a1; }
